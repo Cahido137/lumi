@@ -1,0 +1,37 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+env/
+
+# ---- 环境变量与密钥（重要！）----
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# ---- 编辑器 / IDE ----
+.vscode/
+.idea/
+*.swp
+
+# ---- 测试与缓存 ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- 日志与数据 ----
+*.log
+data/
+*.db
+*.sqlite3
