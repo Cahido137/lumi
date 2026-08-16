@@ -17,3 +17,16 @@ SessionLocal = async_sessionmaker(
     bind=async_engine,
     expire_on_commit=False
 )
+
+
+async def get_db():
+    """获取数据库会话依赖"""
+    async with SessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
