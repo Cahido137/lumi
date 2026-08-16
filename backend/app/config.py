@@ -21,6 +21,12 @@ class LLMSettings(BaseSettings):
     llm_model: str = Field(..., description="模型名")
     llm_temperature: float = Field(0.7, description="模型温度")
 
+    llm_provider: str = Field("openai", description="模型提供商")
+    llm_max_tokens: int | None = Field(None, description="单次回复最大token数")
+    llm_timeout: float = Field(60.0, description="单次请求超时秒数")
+    llm_max_retries: int = Field(2, ge=0, description="最大重试次数")
+    llm_api_version: str = Field("", description="大部分情况留空即可")
+
 
 # 数据库配置信息
 class DBSettings(BaseSettings):
@@ -33,8 +39,10 @@ class DBSettings(BaseSettings):
 
 @lru_cache
 def get_llmsettings() -> LLMSettings:
+    """获得大模型配置单例"""
     return LLMSettings()
 
 @lru_cache
 def get_dbsettings() -> DBSettings:
+    """获得数据库配置单例"""
     return DBSettings()
