@@ -1,7 +1,5 @@
 from typing import Literal
 
-from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
-from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 
@@ -19,16 +17,6 @@ _model = get_chat_model()
 # 绑定工具
 _model_with_tools = _model.bind_tools(tools=TOOLS)
 
-
-async def input_node(state: InputState) -> AgentState:
-    """输入节点"""
-    messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=state["user_input"])
-    ]
-    return {
-        "messages": messages
-    }
 
 async def model_node(state: AgentState) -> AgentState:
     """大模型节点"""
@@ -52,11 +40,9 @@ def build_agent_graph():
         input_schema=InputState,
         output_schema=OutputState
     )
-    builder.add_node("input_node", input_node)
     builder.add_node("model_node", model_node)
     builder.add_node("tool_node", ToolNode(TOOLS))
-    builder.add_edge(START, "input_node")
-    builder.add_edge("input_node", "model_node")
+    builder.add_edge(START, "model_node")
     builder.add_conditional_edges("model_node", router, path_map=["tool_node", END])
     builder.add_edge("tool_node", "model_node")
     return builder.compile()
