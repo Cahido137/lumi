@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.graph.builder import build_agent_graph, SYSTEM_PROMPT
+from app.core.session_runner import run_agent_session
 from app.crud import messages as messages_crud
 from app.crud import sessions as sessions_crud
 from app.db.session import get_db
@@ -14,20 +14,6 @@ from app.utils.response import success_response
 
 
 router = APIRouter(prefix="/api/sessions", tags=["chat"])
-
-# 创建 Agent 图单例
-_agent_graph = build_agent_graph()
-
-
-def _to_langchain_messages(rows) -> list[BaseMessage]:
-    """将数据库中的消息行转化为langchain风格消息列表"""
-    messages: BaseMessage = []
-    for row in rows:
-        if row.role == "user":
-            messages.append(HumanMessage(content=row.content))
-        elif row.role == "assistant":
-            messages.append(AIMessage(content=row.content))
-    return messages
 
 
 @router.post("/{session_id}/chat")
@@ -38,29 +24,16 @@ async def chat(session_id: UUID, request: ChatRequest, db: AsyncSession = Depend
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    # 读取会话中的全部消息
-    history = _to_langchain_messages(
-        await messages_crud.list_message_asc(db, str(session_id))
-    )
-    messages = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=request.content)]
-
-    # 存储传入的用户消息
-    await messages_crud.add_message(db, str(session_id), "user", request.content)
-    await db.commit()
-
-    # 运行图
-    output = await _agent_graph.ainvoke({
-        "messages": messages
-    })
-    # 拿到回答
-    reply = output["messages"][-1].content
-
-    # 存储回答消息
-    ai_message = await messages_crud.add_message(db, str(session_id), "assistant", reply)
+    # 运行一轮 Agent
+    ai_message = await run_agent_session(str(session_id), request.content)
 
     return success_response(
         message="已回答",
-        data=ChatResponse(sessionId=str(session_id), reply=reply, createdAt=ai_message.created_at)
+        data=ChatResponse(
+            sessionId=str(session_id),
+            reply=ai_message.content,
+            createdAt=ai_message.created_at
+        )
     )
 
 @router.get("/{session_id}/messages")
