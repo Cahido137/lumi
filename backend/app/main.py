@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import chat, sessions
+from app.routers import chat, sessions, ws
 from app.utils.exception_handlers import register_exception_handlers
 
 
@@ -37,3 +37,4 @@ app.add_middleware(
 # 挂载路由
 app.include_router(chat.router)
 app.include_router(sessions.router)
+app.include_router(ws.router)
