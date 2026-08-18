@@ -6,7 +6,7 @@ from langgraph.prebuilt import ToolNode
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.core.graph.state import AgentState, InputState, OutputState
-from app.core.llm import get_chat_model
+from app.core.llm import get_chat_model, create_planner_llm
 from app.core.tools import TOOLS
 from app.core.graph.schemas import PlanOutput
 
@@ -31,7 +31,10 @@ async def planner_node(state: AgentState) -> AgentState:
     """计划器节点"""
     task = state["messages"][-1].content  # 拿到用户的消息
     # 让模型以结构化方式输出todos
-    planner_llm = _model.with_structured_output(PlanOutput)
+    planner_llm = create_planner_llm().with_structured_output(
+        PlanOutput,
+        method="function_calling"
+    )
     plans = await planner_llm.ainvoke([SystemMessage(content=PLANNER_PROMPT), HumanMessage(content=task)])
 
     # 构建 todos 列表

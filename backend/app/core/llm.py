@@ -57,7 +57,8 @@ def create_llm(**overrides) -> BaseChatModel:
         "temperature": settings.llm_temperature,
         "max_tokens": settings.llm_max_tokens,
         "timeout": settings.llm_timeout,
-        "max_retries": settings.llm_max_retries
+        "max_retries": settings.llm_max_retries,
+        "extra_body": None  # 提供商特有参数
     }
     # 检查参数格式
     unknown = set(overrides) - set(params)
@@ -75,7 +76,8 @@ def create_llm(**overrides) -> BaseChatModel:
         temperature=params["temperature"],
         max_tokens=params["max_tokens"],
         timeout=params["timeout"],
-        max_retries=params["max_retries"]
+        max_retries=params["max_retries"],
+        extra_body=params["extra_body"]
     )
 
     # 创建模型实例
@@ -85,6 +87,20 @@ def create_llm(**overrides) -> BaseChatModel:
 @lru_cache
 def get_chat_model() -> BaseChatModel:
     """获得大模型实例"""
+    return create_llm()
+
+@lru_cache
+def create_planner_llm() -> BaseChatModel:
+    """
+    创建计划器llm
+    针对deepseek思考模式无法支持结构化输出的策略
+    """
+    settings = get_llmsettings()
+    provider = settings.llm_provider or detect_provider(settings.llm_base_url)
+    is_deepseek = (provider == "deepseek" or "deepseek" in settings.llm_base_url.lower())
+    # 如果是 deepseek 则关闭思考模式
+    if is_deepseek:
+        return create_llm(extra_body={"thinking": {"type": "disabled"}})
     return create_llm()
 
 
