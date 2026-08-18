@@ -2,8 +2,8 @@ from typing import Literal
 from uuid import uuid4
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from langgraph.types import interrupt
 
 from app.core.graph.state import AgentState, InputState, OutputState
 from app.core.llm import get_chat_model, create_planner_llm
@@ -19,6 +19,12 @@ PLANNER_PROMPT = (
     "你是一个任务规划器, 将用户的需求拆分成多个条例清晰、有先后顺序的todo计划。"
     "要求步骤之间不能有重叠, 设计的步骤数不宜过多, 也不可为了追求步骤少而放弃了清晰的条理。"
 )
+
+# 需要审批的工具列表
+APPROVAL_REQUIRED_TOOLS = ["run_shell", "write_file"]
+
+# 构建工具名称映射字典列表
+TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
 
 
 # 获得模型
@@ -62,6 +68,35 @@ async def model_node(state: AgentState) -> AgentState:
         "messages": [response]
     }
 
+async def tool_node(state: AgentState) -> AgentState:
+    """工具执行节点"""
+    last_msg = state["messages"][-1]  # 获取最后一条消息
+    tool_msgs = []
+    # 遍历工具调用请求
+    for tc in last_msg.tool_calls:
+        if tc["name"] in APPROVAL_REQUIRED_TOOLS:
+            # 工具需要审批，此处中断
+            decision = interrupt({
+                "tool": tc["name"],
+                "tool_input": tc["args"]
+            })
+            # 拒绝执行情况
+            if decision == "rejected":
+                tool_msgs.append(ToolMessage(
+                    name=tc["name"],
+                    content="[REJECTED] 用户拒绝此操作",
+                    tool_call_id=tc["id"]
+                ))
+                continue
+        # 批准或直接通过，手动调用工具
+        result = await TOOLS_BY_NAME[tc["name"]].ainvoke(tc["args"])
+        tool_msgs.append(ToolMessage(
+            name=tc["name"],
+            content=result,
+            tool_call_id=tc["id"]
+        ))
+    return {"messages": tool_msgs}
+
 def router(state: AgentState) -> Literal["tool_node", END]:
     """路由函数"""
     last_msg = state["messages"][-1]
@@ -70,7 +105,7 @@ def router(state: AgentState) -> Literal["tool_node", END]:
     return END
 
 
-def build_agent_graph():
+def build_agent_graph(checkpointer=None):
     """组装图"""
     builder = StateGraph(
         state_schema=AgentState,
@@ -79,9 +114,9 @@ def build_agent_graph():
     )
     builder.add_node("planner_node", planner_node)
     builder.add_node("model_node", model_node)
-    builder.add_node("tool_node", ToolNode(TOOLS))
+    builder.add_node("tool_node", tool_node)
     builder.add_edge(START, "planner_node")
     builder.add_edge("planner_node", "model_node")
     builder.add_conditional_edges("model_node", router, path_map=["tool_node", END])
     builder.add_edge("tool_node", "model_node")
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

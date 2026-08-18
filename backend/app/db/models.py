@@ -69,6 +69,7 @@ class Approval(Base):
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="审批唯一标识ID")
     session_id: Mapped[str] = mapped_column(ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID")
+    thread_id: Mapped[str] = mapped_column(String(200), comment="线程ID, 用于中断恢复")
     tool_execution_id: Mapped[str] = mapped_column(ForeignKey(ToolExecution.id, ondelete="CASCADE"), index=True, comment="关联工具执行ID")
     status: Mapped[str] = mapped_column(String(20), default="pending", comment="pending=待审批, approved=已批准, rejected=已拒绝")
     scope: Mapped[str] = mapped_column(String(20), default="one_time", comment="one_time=批准这一次, command=始终允许此工具执行此命令, tool=始终允许此工具")

@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core import compat  # 兼容层
+from app.core.checkpoint import close_checkpoint, setup_checkpoint
 from app.routers import chat, sessions, ws
 from app.utils.exception_handlers import register_exception_handlers
 
@@ -12,12 +14,12 @@ from app.utils.exception_handlers import register_exception_handlers
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """生命周期钩子"""
-    # 运行前
-    print("[INFO] Start")
+    await setup_checkpoint()  # 初始化检查表
+    print("[INFO] 检查点已初始化")
     # 运行中
     yield
-    # 运行后
-    print("[INFO] END")
+    await close_checkpoint()  # 关闭检查点
+    print("[INFO] 检查点已关闭")
 
 
 app = FastAPI(lifespan=lifespan)
