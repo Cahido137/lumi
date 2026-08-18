@@ -1,7 +1,11 @@
 """会话运行器"""
 
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+from uuid import uuid4
 
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+from langgraph.types import Command
+
+from app.core.checkpoint import get_checkpointer
 from app.core.event_bus import event_bus
 from app.core.events import AgentEvent, EventType
 from app.core.event_response import (
@@ -10,17 +14,28 @@ from app.core.event_response import (
     AgentStartResponse, 
     AgentFinishedResponse, 
     ErrorResponse, 
-    PlanUpdatedResponse
+    PlanUpdatedResponse,
+    ApprovalRequiredResponse,
+    ApprovalResultResponse
 )
 from app.core.graph.builder import SYSTEM_PROMPT, build_agent_graph
 from app.crud import messages as messages_crud
 from app.crud import todos as todos_crud
+from app.crud import approvals as approvals_crud
+from app.crud import tool_executions as tool_executions_crud
 from app.db.models import Message
 from app.db.session import SessionLocal
 
 
 # 图单例
-_agent_graph = build_agent_graph()
+_agent_graph = None
+
+def _get_agent_graph():
+    """获取图单例"""
+    global _agent_graph
+    if _agent_graph is None:
+        _agent_graph = build_agent_graph(get_checkpointer())
+    return _agent_graph
 
 
 def _to_langchain_messages(rows) -> list[BaseMessage]:
@@ -41,8 +56,95 @@ async def _publish_plan(session_id: str, todos: list[dict]) -> None:
         data=PlanUpdatedResponse(todos=todos)
     ))
 
+def _build_config(session_id: str) -> tuple[dict, str]:
+    """生成运行config与thread_id"""
+    thread_id = f"{session_id}:{uuid4()}"  # 格式为会话ID+一个uuid
+    return {"configurable": {"thread_id": thread_id}}, thread_id
 
-async def run_agent_session(session_id: str, content: str) -> Message:
+async def _load_plan_queue(db, session_id: str) -> list[dict]:
+    """从todos表重载计划队列"""
+    rows = await todos_crud.list_todos(db, session_id)
+    return [
+        {"id": todo.id, "title": todo.title, "status": todo.status, "position": todo.position}
+        for todo in rows
+    ]
+
+
+async def _process_stream(db, session_id: str, plan_queue: list[dict], graph_input, config) -> tuple[str, dict | None]:
+    """图运行与事件处理流"""
+    # 以流式方式运行图
+    final_reply = ""
+    interrupt_info: dict | None = None
+    async for chunk in _get_agent_graph().astream(
+        graph_input,
+        config=config,
+        stream_mode="updates"
+    ):
+        # 检查是否有中断
+        if "__interrupt__" in chunk:
+            interrupt_info = chunk["__interrupt__"][0].value  # 提取中断信息
+            break
+
+        # 找到计划器节点输出
+        if "planner_node" in chunk:
+            plan_queue = sorted(chunk["planner_node"]["todos"], key=lambda t: t["position"])  # 按顺序组织计划队列
+            await todos_crud.replace_todos(db, session_id, plan_queue)
+            await db.commit()
+            await _publish_plan(session_id, plan_queue)
+                
+        # 找到模型节点输出
+        if "model_node" in chunk:
+            msg = chunk["model_node"]["messages"][-1]  # 拿到最近一条消息
+            if msg.tool_calls:
+                for tool in msg.tool_calls:
+                    # 修改状态
+                    current = next(
+                        (t for t in plan_queue if t["status"] == "pending"), None
+                    )
+                    if current is not None:
+                        # 更新计划状态
+                        current["status"] = "in_progress"
+                        await todos_crud.update_todo_status(db, current["id"], "in_progress")
+                        await db.commit()
+                        await _publish_plan(session_id, plan_queue)
+                    # 发布工具开始执行事件
+                    await event_bus.publish(AgentEvent(
+                        eventType=EventType.TOOL_STARTED,
+                        sessionId=session_id,
+                        data=ToolStartedResponse(tool=tool["name"], tool_input=tool["args"])
+                    ))
+            else:
+                final_reply = msg.content
+
+        # 找到工具节点输出
+        if "tool_node" in chunk:
+            for tm in chunk["tool_node"]["messages"]:
+                # 如果刚批准，落库执行结果
+                pending = await tool_executions_crud.get_pending_execution(db, session_id)
+                if (pending is not None) and (pending.tool_name == tm.name):
+                    await tool_executions_crud.finish_execution(db, pending.id, "success", tm.content)
+                    await db.commit()
+
+                # 修改状态
+                current = next(
+                    (t for t in plan_queue if t["status"] == "in_progress"), None
+                )
+                if current is not None:
+                    # 更新计划状态
+                    current["status"] = "done"
+                    await todos_crud.update_todo_status(db, current["id"], "done")
+                    await db.commit()
+                    await _publish_plan(session_id, plan_queue)
+                # 发布工具结束执行事件
+                await event_bus.publish(AgentEvent(
+                    eventType=EventType.TOOL_FINISHED,
+                    sessionId=session_id,
+                    data=ToolFinishedResponse(tool=tm.name, tool_output=tm.content)
+                ))
+    return final_reply, interrupt_info
+
+
+async def run_agent_session(session_id: str, content: str) -> Message | None:
     """运行一轮 Agent 对话"""
     # 发布开始事件
     await event_bus.publish(AgentEvent(
@@ -63,77 +165,42 @@ async def run_agent_session(session_id: str, content: str) -> Message:
             await messages_crud.add_message(db, session_id, "user", content)
             await db.commit()
 
-            # 计划队列
-            plan_queue: list[dict] = []
+            config, thread_id = _build_config(session_id)  # 创建配置
+            final_reply, interrupted_info = await _process_stream(
+                db, session_id, [], {"messages": messages}, config
+            )
 
-            # 以流式方式运行图
-            final_reply = ""
-            async for chunk in _agent_graph.astream(
-                {"messages": messages},
-                stream_mode="updates"
-            ):
-                # 找到计划器节点输出
-                if "planner_node" in chunk:
-                    plan_queue = sorted(chunk["planner_node"]["todos"], key=lambda t: t["position"])  # 按顺序组织计划队列
-                    await todos_crud.replace_todos(db, session_id, plan_queue)
-                    await db.commit()
-                    await _publish_plan(session_id, plan_queue)
-                
-                # 找到模型节点输出
-                if "model_node" in chunk:
-                    msg = chunk["model_node"]["messages"][-1]  # 拿到最近一条消息
-                    if msg.tool_calls:
-                        for tool in msg.tool_calls:
-                            # 修改状态
-                            current = next(
-                                (t for t in plan_queue if t["status"] == "pending"), None
-                            )
-                            if current is not None:
-                                # 更新计划状态
-                                current["status"] = "in_progress"
-                                await todos_crud.update_todo_status(db, current["id"], "in_progress")
-                                await db.commit()
-                                await _publish_plan(session_id, plan_queue)
-                            # 发布工具开始执行事件
-                            await event_bus.publish(AgentEvent(
-                                eventType=EventType.TOOL_STARTED,
-                                sessionId=session_id,
-                                data=ToolStartedResponse(tool=tool["name"], tool_input=tool["args"])
-                            ))
-                    else:
-                        final_reply = msg.content
+            # 如果有中断信息则创建审批相关信息并落库，并且发布审批事件到总线
+            if interrupted_info is not None:
+                execution = await tool_executions_crud.create_pending_execution(
+                    db, session_id, interrupted_info["tool"], interrupted_info["tool_input"]
+                )
+                approval = await approvals_crud.create_approval(
+                    db, session_id, thread_id, execution.id
+                )
+                await db.commit()
+                await event_bus.publish(AgentEvent(
+                    eventType=EventType.APPROVAL_REQUIRED,
+                    sessionId=session_id,
+                    data=ApprovalRequiredResponse(
+                        approval_id=approval.id,
+                        tool=interrupted_info["tool"],
+                        tool_input=interrupted_info["tool_input"]
+                    )
+                ))
+                return None
 
-                # 找到工具节点输出
-                if "tool_node" in chunk:
-                    for tm in chunk["tool_node"]["messages"]:
-                        # 修改状态
-                        current = next(
-                            (t for t in plan_queue if t["status"] == "in_progress"), None
-                        )
-                        if current is not None:
-                            # 更新计划状态
-                            current["status"] = "done"
-                            await todos_crud.update_todo_status(db, current["id"], "done")
-                            await db.commit()
-                            await _publish_plan(session_id, plan_queue)
-                        # 发布工具结束执行事件
-                        await event_bus.publish(AgentEvent(
-                            eventType=EventType.TOOL_FINISHED,
-                            sessionId=session_id,
-                            data=ToolFinishedResponse(tool=tm.name, tool_output=tm.content)
-                        ))
-
-                # AI 消息落库
+            # 最后回答
             ai_message = await messages_crud.add_message(db, session_id, "assistant", final_reply)
             await db.commit()
 
-            # 发布结束事件
-            await event_bus.publish(AgentEvent(
-                eventType=EventType.AGENT_FINISHED,
-                sessionId=session_id,
-                data=AgentFinishedResponse(reply=final_reply)
-            ))
-            return ai_message
+        # 发布结束事件
+        await event_bus.publish(AgentEvent(
+            eventType=EventType.AGENT_FINISHED,
+            sessionId=session_id,
+            data=AgentFinishedResponse(reply=final_reply)
+        ))
+        return ai_message
 
     except Exception as e:
         # 发布错误事件
@@ -143,3 +210,65 @@ async def run_agent_session(session_id: str, content: str) -> Message:
             data=ErrorResponse(message=str(e))
         ))
         raise
+
+
+async def resume_agent_session(approval_id: str, decision: str, scope: str = "one_time") -> str | None:
+    """审批完成，恢复图的执行"""
+    async with SessionLocal() as db:
+        approval = await approvals_crud.get_approval_by_id(db, approval_id)  # 拿到审批单
+        if approval is None:
+            raise ValueError("审批单不存在")
+        if approval.status != "pending":
+            raise ValueError("审批单已处理")
+
+        # 更新审批单
+        await approvals_crud.update_approval(db, approval_id, decision, scope)
+        await db.commit()
+
+        # 发布审批结束事件到总线
+        await event_bus.publish(AgentEvent(
+            eventType=EventType.APPROVAL_RESULT,
+            sessionId=approval.session_id,
+            data=ApprovalResultResponse(
+                approval_id=approval.id,
+                status=decision
+            )
+        ))
+
+        # 恢复图的执行
+        config = {"configurable": {"thread_id": approval.thread_id}}
+        plan_queue = await _load_plan_queue(db, approval.session_id)
+        final_reply, interrupt_info = await _process_stream(
+            db, approval.session_id, plan_queue, Command(resume=decision), config
+        )
+
+        # 再次检查是否还有中断
+        if interrupt_info is not None:
+            execution = await tool_executions_crud.create_pending_execution(
+                db, approval.session_id, interrupt_info["tool"], interrupt_info["tool_input"]
+            )
+            new_approval = await approvals_crud.create_approval(
+                db, approval.session_id, approval.thread_id, execution.id
+            )
+            await db.commit()
+            await event_bus.publish(AgentEvent(
+                eventType=EventType.APPROVAL_REQUIRED,
+                sessionId=approval.session_id,
+                data=ApprovalRequiredResponse(
+                    approval_id=new_approval.id,
+                    tool=interrupt_info["tool"],
+                    tool_input=interrupt_info["tool_input"]
+                )
+            ))
+            return None
+        ai_message = await messages_crud.add_message(
+            db, approval.session_id, "assistant", final_reply
+        )
+        await db.commit()
+
+    await event_bus.publish(AgentEvent(
+        eventType=EventType.AGENT_FINISHED,
+        sessionId=approval.session_id,
+        data=AgentFinishedResponse(reply=final_reply)
+    ))
+    return final_reply

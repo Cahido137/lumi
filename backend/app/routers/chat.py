@@ -26,6 +26,12 @@ async def chat(session_id: UUID, request: ChatRequest, db: AsyncSession = Depend
 
     # 运行一轮 Agent
     ai_message = await run_agent_session(str(session_id), request.content)
+    # 如果没有返回，说明此处中断了
+    if ai_message is None:
+        return success_response(
+            message="任务暂停, 等待人工审批",
+            data=ChatResponse(sessionId=str(session_id), reply="任务暂停, 等待人工审批", createdAt=None)
+        )
 
     return success_response(
         message="已回答",
