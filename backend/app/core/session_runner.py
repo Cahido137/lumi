@@ -108,12 +108,12 @@ async def run_agent_session(session_id: str, content: str) -> Message:
                     for tm in chunk["tool_node"]["messages"]:
                         # 修改状态
                         current = next(
-                            (t for t in plan_queue if t["status"] == "pending"), None
+                            (t for t in plan_queue if t["status"] == "in_progress"), None
                         )
                         if current is not None:
                             # 更新计划状态
-                            current["status"] = "in_progress"
-                            await todos_crud.update_todo_status(db, current["id"], "in_progress")
+                            current["status"] = "done"
+                            await todos_crud.update_todo_status(db, current["id"], "done")
                             await db.commit()
                             await _publish_plan(session_id, plan_queue)
                         # 发布工具结束执行事件

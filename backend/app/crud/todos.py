@@ -14,7 +14,7 @@ async def replace_todos(db: AsyncSession, session_id: str, todos: list[dict]) ->
     for t in todos:
         db.add(Todo(
             id=t["id"],
-            session_id=t["session_id"],
+            session_id=session_id,
             title=t["title"],
             status=t["status"],
             position=t["position"]
