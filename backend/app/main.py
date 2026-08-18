@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core import compat  # 兼容层
 from app.core.checkpoint import close_checkpoint, setup_checkpoint
-from app.routers import chat, sessions, ws
+from app.routers import chat, sessions, ws, approvals
 from app.utils.exception_handlers import register_exception_handlers
 
 
@@ -40,3 +40,4 @@ app.add_middleware(
 app.include_router(chat.router)
 app.include_router(sessions.router)
 app.include_router(ws.router)
+app.include_router(approvals.router)
