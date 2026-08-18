@@ -4,9 +4,17 @@ from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AI
 
 from app.core.event_bus import event_bus
 from app.core.events import AgentEvent, EventType
-from app.core.event_response import ToolStartedResponse, ToolFinishedResponse, AgentStartResponse, AgentFinishedResponse, ErrorResponse
+from app.core.event_response import (
+    ToolStartedResponse, 
+    ToolFinishedResponse, 
+    AgentStartResponse, 
+    AgentFinishedResponse, 
+    ErrorResponse, 
+    PlanUpdatedResponse
+)
 from app.core.graph.builder import SYSTEM_PROMPT, build_agent_graph
 from app.crud import messages as messages_crud
+from app.crud import todos as todos_crud
 from app.db.models import Message
 from app.db.session import SessionLocal
 
@@ -24,6 +32,14 @@ def _to_langchain_messages(rows) -> list[BaseMessage]:
         elif row.role == "assistant":
             messages.append(AIMessage(content=row.content))
     return messages
+
+async def _publish_plan(session_id: str, todos: list[dict]) -> None:
+    """发布计划更新事件"""
+    await event_bus.publish(AgentEvent(
+        eventType=EventType.PLAN_UPDATED,
+        sessionId=session_id,
+        data=PlanUpdatedResponse(todos=todos)
+    ))
 
 
 async def run_agent_session(session_id: str, content: str) -> Message:
@@ -47,17 +63,37 @@ async def run_agent_session(session_id: str, content: str) -> Message:
             await messages_crud.add_message(db, session_id, "user", content)
             await db.commit()
 
+            # 计划队列
+            plan_queue: list[dict] = []
+
             # 以流式方式运行图
             final_reply = ""
             async for chunk in _agent_graph.astream(
                 {"messages": messages},
                 stream_mode="updates"
             ):
+                # 找到计划器节点输出
+                if "planner_node" in chunk:
+                    plan_queue = sorted(chunk["planner_node"]["todos"], key=lambda t: t["position"])  # 按顺序组织计划队列
+                    await todos_crud.replace_todos(db, session_id, plan_queue)
+                    await db.commit()
+                    await _publish_plan(session_id, plan_queue)
+                
                 # 找到模型节点输出
                 if "model_node" in chunk:
                     msg = chunk["model_node"]["messages"][-1]  # 拿到最近一条消息
                     if msg.tool_calls:
                         for tool in msg.tool_calls:
+                            # 修改状态
+                            current = next(
+                                (t for t in plan_queue if t["status"] == "pending"), None
+                            )
+                            if current is not None:
+                                # 更新计划状态
+                                current["status"] = "in_progress"
+                                await todos_crud.update_todo_status(db, current["id"], "in_progress")
+                                await db.commit()
+                                await _publish_plan(session_id, plan_queue)
                             # 发布工具开始执行事件
                             await event_bus.publish(AgentEvent(
                                 eventType=EventType.TOOL_STARTED,
@@ -70,6 +106,17 @@ async def run_agent_session(session_id: str, content: str) -> Message:
                 # 找到工具节点输出
                 if "tool_node" in chunk:
                     for tm in chunk["tool_node"]["messages"]:
+                        # 修改状态
+                        current = next(
+                            (t for t in plan_queue if t["status"] == "pending"), None
+                        )
+                        if current is not None:
+                            # 更新计划状态
+                            current["status"] = "in_progress"
+                            await todos_crud.update_todo_status(db, current["id"], "in_progress")
+                            await db.commit()
+                            await _publish_plan(session_id, plan_queue)
+                        # 发布工具结束执行事件
                         await event_bus.publish(AgentEvent(
                             eventType=EventType.TOOL_FINISHED,
                             sessionId=session_id,
