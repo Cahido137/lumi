@@ -16,7 +16,8 @@ from app.core.event_response import (
     ErrorResponse, 
     PlanUpdatedResponse,
     ApprovalRequiredResponse,
-    ApprovalResultResponse
+    ApprovalResultResponse,
+    TokenResponse
 )
 from app.core.graph.builder import SYSTEM_PROMPT, build_agent_graph
 from app.crud import messages as messages_crud
@@ -78,23 +79,39 @@ async def _process_stream(db, session_id: str, plan_queue: list[dict], graph_inp
     async for chunk in _get_agent_graph().astream(
         graph_input,
         config=config,
-        stream_mode="updates"
+        stream_mode=["updates", "messages"]
     ):
+        mode, payload = chunk  # 分离流式块中的信息
+
+        if mode == "messages":
+            msg_chunk, meta_data = payload
+            node = meta_data.get("langgraph_node")
+            content = msg_chunk.content
+            # 如果流式块来自大模型节点并且非空
+            if node == "model_node" and isinstance(content, str) and content:
+                # 发布流式输出事件
+                await event_bus.publish(AgentEvent(
+                    eventType=EventType.TOKEN,
+                    sessionId=session_id,
+                    data=TokenResponse(token=content)
+                ))
+            continue
+
         # 检查是否有中断
-        if "__interrupt__" in chunk:
-            interrupt_info = chunk["__interrupt__"][0].value  # 提取中断信息
+        if "__interrupt__" in payload:
+            interrupt_info = payload["__interrupt__"][0].value  # 提取中断信息
             break
 
         # 找到计划器节点输出
-        if "planner_node" in chunk:
-            plan_queue = sorted(chunk["planner_node"]["todos"], key=lambda t: t["position"])  # 按顺序组织计划队列
+        if "planner_node" in payload:
+            plan_queue = sorted(payload["planner_node"]["todos"], key=lambda t: t["position"])  # 按顺序组织计划队列
             await todos_crud.replace_todos(db, session_id, plan_queue)
             await db.commit()
             await _publish_plan(session_id, plan_queue)
                 
         # 找到模型节点输出
-        if "model_node" in chunk:
-            msg = chunk["model_node"]["messages"][-1]  # 拿到最近一条消息
+        if "model_node" in payload:
+            msg = payload["model_node"]["messages"][-1]  # 拿到最近一条消息
             if msg.tool_calls:
                 for tool in msg.tool_calls:
                     # 修改状态
@@ -117,8 +134,8 @@ async def _process_stream(db, session_id: str, plan_queue: list[dict], graph_inp
                 final_reply = msg.content
 
         # 找到工具节点输出
-        if "tool_node" in chunk:
-            for tm in chunk["tool_node"]["messages"]:
+        if "tool_node" in payload:
+            for tm in payload["tool_node"]["messages"]:
                 # 如果刚批准，落库执行结果
                 pending = await tool_executions_crud.get_pending_execution(db, session_id)
                 if (pending is not None) and (pending.tool_name == tm.name):
