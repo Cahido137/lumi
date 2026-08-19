@@ -57,7 +57,7 @@ class ToolExecution(Base):
     tool_name: Mapped[str] = mapped_column(String(100), comment="工具名称")
     tool_input: Mapped[dict] = mapped_column(JSONB, default=dict, comment="工具入参")
     tool_output: Mapped[str | None] = mapped_column(Text, nullable=True, comment="工具输出")
-    status: Mapped[str] = mapped_column(String(20), default="success", comment="success=成功, error=失败, pending=等待审批")
+    status: Mapped[str] = mapped_column(String(20), default="success", comment="success=成功, error=失败, pending=等待审批, rejected=已拒绝")
     needs_approval: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否需要审批")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), comment="开始执行时间")
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="结束执行时间")

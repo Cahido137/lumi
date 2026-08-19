@@ -136,10 +136,15 @@ async def _process_stream(db, session_id: str, plan_queue: list[dict], graph_inp
         # 找到工具节点输出
         if "tool_node" in payload:
             for tm in payload["tool_node"]["messages"]:
+                # 先提取出消息块，并确保是字符串
+                content = tm.content if isinstance(tm.content, str) else str(tm.content)
+                rejected = content.startswith("[REJECTED]")  # 判断审批是否被拒绝
+
                 # 如果刚批准，落库执行结果
                 pending = await tool_executions_crud.get_pending_execution(db, session_id)
                 if (pending is not None) and (pending.tool_name == tm.name):
-                    await tool_executions_crud.finish_execution(db, pending.id, "success", tm.content)
+                    status = "rejected" if rejected else "success"
+                    await tool_executions_crud.finish_execution(db, pending.id, status, tm.content)
                     await db.commit()
 
                 # 修改状态
@@ -148,8 +153,9 @@ async def _process_stream(db, session_id: str, plan_queue: list[dict], graph_inp
                 )
                 if current is not None:
                     # 更新计划状态
-                    current["status"] = "done"
-                    await todos_crud.update_todo_status(db, current["id"], "done")
+                    new_status = "failed" if rejected else "done"
+                    current["status"] = new_status
+                    await todos_crud.update_todo_status(db, current["id"], new_status)
                     await db.commit()
                     await _publish_plan(session_id, plan_queue)
                 # 发布工具结束执行事件
