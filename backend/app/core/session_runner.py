@@ -189,8 +189,9 @@ async def run_agent_session(session_id: str, content: str) -> Message | None:
             await db.commit()
 
             config, thread_id = _build_config(session_id)  # 创建配置
+            grants = await approvals_crud.get_session_grants(db, session_id)  # 获取当前会话工具授权
             final_reply, interrupted_info = await _process_stream(
-                db, session_id, [], {"messages": messages}, config
+                db, session_id, [], {"messages": messages, "grants": grants}, config
             )
 
             # 如果有中断信息则创建审批相关信息并落库，并且发布审批事件到总线
@@ -261,8 +262,9 @@ async def resume_agent_session(approval_id: str, decision: str, scope: str = "on
         # 恢复图的执行
         config = {"configurable": {"thread_id": approval.thread_id}}
         plan_queue = await _load_plan_queue(db, approval.session_id)
+        grants = await approvals_crud.get_session_grants(db, approval.session_id)
         final_reply, interrupt_info = await _process_stream(
-            db, approval.session_id, plan_queue, Command(resume=decision), config
+            db, approval.session_id, plan_queue, Command(resume=decision, update={"grants": grants}), config
         )
 
         # 再次检查是否还有中断

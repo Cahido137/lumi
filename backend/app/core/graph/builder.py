@@ -9,6 +9,7 @@ from app.core.graph.state import AgentState, InputState, OutputState
 from app.core.llm import get_chat_model, create_planner_llm
 from app.core.tools import TOOLS
 from app.core.graph.schemas import PlanOutput
+from app.utils.dict import normalize_dict
 
 
 # 系统提示词
@@ -31,6 +32,16 @@ TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
 _model = get_chat_model()
 # 绑定工具
 _model_with_tools = _model.bind_tools(tools=TOOLS)
+
+
+def _is_granted(grants: dict, tool_name: str, args: dict) -> bool:
+    """判断工具函数是否已经被授权"""
+    # 如果工具在授权中存在
+    if tool_name in grants.get("tool", []):
+        return True
+    commands = grants.get("command", {}).get(tool_name, [])
+    # 判断是否已授权指定命令
+    return normalize_dict(args) in commands
 
 
 async def planner_node(state: AgentState) -> AgentState:
@@ -72,9 +83,11 @@ async def tool_node(state: AgentState) -> AgentState:
     """工具执行节点"""
     last_msg = state["messages"][-1]  # 获取最后一条消息
     tool_msgs = []
+    grants = state.get("grants") or {}
     # 遍历工具调用请求
     for tc in last_msg.tool_calls:
-        if tc["name"] in APPROVAL_REQUIRED_TOOLS:
+        # 是需要审批的工具并且没有已经记录的审批授权
+        if tc["name"] in APPROVAL_REQUIRED_TOOLS and not _is_granted(grants, tc["name"], tc["args"] or {}):
             # 工具需要审批，此处中断
             decision = interrupt({
                 "tool": tc["name"],

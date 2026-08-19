@@ -1,6 +1,6 @@
 """图状态"""
 
-from typing import Annotated
+from typing import Annotated, NotRequired
 from typing_extensions import TypedDict
 
 from langchain_core.messages import BaseMessage
@@ -18,11 +18,13 @@ class AgentState(TypedDict):
     """图全局状态"""
     messages: Annotated[list[BaseMessage], add_messages]
     todos: Annotated[list[dict], todo_list_reducer]
+    grants: dict  # 工具授权快照  格式要求: {"tool": [], "command": {}}
 
 
 class InputState(TypedDict):
     """输入状态"""
     messages: list[BaseMessage]
+    grants: NotRequired[dict]
 
 
 class OutputState(TypedDict):
