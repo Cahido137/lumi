@@ -1,6 +1,6 @@
 """审批单的 CRUD 操作"""
 
-from sqlalchemy import update
+from sqlalchemy import update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Approval
@@ -26,6 +26,6 @@ async def get_approval_by_id(db: AsyncSession, approval_id: str) -> Approval | N
 
 async def update_approval(db: AsyncSession, approval_id: str, status: str, scope: str) -> None:
     """更新审批单"""
-    stmt = update(Approval).where(Approval.id == approval_id).values(status=status, scope=scope)
+    stmt = update(Approval).where(Approval.id == approval_id).values(status=status, scope=scope, decided_at=func.now())
     await db.execute(stmt)
     await db.flush()
