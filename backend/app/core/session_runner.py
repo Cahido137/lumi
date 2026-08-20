@@ -327,9 +327,20 @@ async def resume_agent_session(approval_id: str, decision: str, scope: str = "on
             config = {"configurable": {"thread_id": thread_id}}
             plan_queue = await _load_plan_queue(db, session_id)
             grants = await approvals_crud.get_session_grants(db, session_id)
-            final_reply, interrupt_info = await _process_stream(
-                db, session_id, plan_queue, Command(resume=decision, update={"grants": grants}), config
-            )
+            try:
+                final_reply, interrupt_info = await _process_stream(
+                    db, session_id, plan_queue, Command(resume=decision, update={"grants": grants}), config
+                )
+            except Exception as e:
+                # 出现异常回滚审批单
+                await approvals_crud.revert_approval(db, approval_id)
+                await db.commit()
+                await event_bus.publish(AgentEvent(
+                    eventType=EventType.ERROR,
+                    sessionId=session_id,
+                    data=ErrorResponse(message=f"恢复执行失败: {e}")
+                ))
+                raise
 
             # 再次检查是否还有中断
             if interrupt_info is not None:

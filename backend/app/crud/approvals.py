@@ -64,3 +64,9 @@ async def has_pending_approval(db: AsyncSession, session_id: str) -> bool:
     stmt = select(Approval.id).where(Approval.session_id == session_id, Approval.status == "pending").limit(1)
     result = await db.execute(stmt)
     return result.first() is not None
+
+async def revert_approval(db: AsyncSession, approval_id: str) -> None:
+    """回滚审批单状态"""
+    stmt = update(Approval).where(Approval.id == approval_id).values(status="pending", scope="one_time", decided_at=None)
+    await db.execute(stmt)
+    await db.flush()
