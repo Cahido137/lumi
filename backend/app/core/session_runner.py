@@ -139,13 +139,16 @@ async def _process_stream(db, session_id: str, plan_queue: list[dict], graph_inp
                 # 先提取出消息块，并确保是字符串
                 content = tm.content if isinstance(tm.content, str) else str(tm.content)
                 rejected = content.startswith("[REJECTED]")  # 判断审批是否被拒绝
+                skipped = content.startswith("[SKIPPED]")  # 判断此工具消息是否因为触发了多重中断而被跳过
 
                 # 如果刚批准，落库执行结果
-                pending = await tool_executions_crud.get_pending_execution(db, session_id)
-                if (pending is not None) and (pending.tool_name == tm.name):
-                    status = "rejected" if rejected else "success"
-                    await tool_executions_crud.finish_execution(db, pending.id, status, tm.content)
-                    await db.commit()
+                # 没有被跳过才执行落库
+                if not skipped:
+                    pending = await tool_executions_crud.get_pending_execution(db, session_id)
+                    if (pending is not None) and (pending.tool_name == tm.name):
+                        status = "rejected" if rejected else "success"
+                        await tool_executions_crud.finish_execution(db, pending.id, status, tm.content)
+                        await db.commit()
 
                 # 修改状态
                 current = next(
@@ -153,7 +156,7 @@ async def _process_stream(db, session_id: str, plan_queue: list[dict], graph_inp
                 )
                 if current is not None:
                     # 更新计划状态
-                    new_status = "failed" if rejected else "done"
+                    new_status = "failed" if rejected else ("pending" if skipped else "done")  # 如果工具被跳过了则工具应该保持pending状态
                     current["status"] = new_status
                     await todos_crud.update_todo_status(db, current["id"], new_status)
                     await db.commit()

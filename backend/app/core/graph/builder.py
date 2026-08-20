@@ -84,10 +84,21 @@ async def tool_node(state: AgentState) -> AgentState:
     last_msg = state["messages"][-1]  # 获取最后一条消息
     tool_msgs = []
     grants = state.get("grants") or {}
+    requested = False  # 记录本次节点是否已经发生过中断
     # 遍历工具调用请求
     for tc in last_msg.tool_calls:
         # 是需要审批的工具并且没有已经记录的审批授权
         if tc["name"] in APPROVAL_REQUIRED_TOOLS and not _is_granted(grants, tc["name"], tc["args"] or {}):
+            # 如果已经发生过中断了，应避免此节点中多次中断引发异常
+            if requested:
+                # 向模型发送消息，让模型下一次消息单独调用工具
+                tool_msgs.append(ToolMessage(
+                    name=tc["name"],
+                    content="[SKIPPED] 一次只允许提交一个审批请求, 请在下次消息单独调用此工具",
+                    tool_call_id=tc["id"]
+                ))
+                continue
+            requested = True
             # 工具需要审批，此处中断
             decision = interrupt({
                 "tool": tc["name"],
