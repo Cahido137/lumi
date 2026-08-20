@@ -67,11 +67,11 @@ async def model_node(state: AgentState) -> AgentState:
     """大模型节点"""
     # 将计划列表序列化为文字
     plan_lines = [
-        f"{t["position"] + 1}. {t["title"]} [{t["status"]}]"
+        f"{t["position"] + 1}. {t["title"]} [{t["status"]}] (todo_id: {t["id"]})"  # 给每条任务末尾附上todo_id
         for t in sorted(state.get("todos", []), key=lambda x: x["position"])  # 按顺序排列好任务
     ]
     plan_context = SystemMessage(
-        content="当前正在执行计划: \n" + "\n".join(plan_lines) + "\n严格按计划完成任务。"
+        content="当前正在执行计划: \n" + "\n".join(plan_lines) + "\n严格按计划完成任务。\n完成一个计划后必须调用 mark_todo_done 工具。"
     )
 
     response = await _model_with_tools.ainvoke([plan_context] + state["messages"])

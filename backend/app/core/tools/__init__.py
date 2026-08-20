@@ -4,6 +4,7 @@ from app.core.tools.http_tool import http_get
 from app.core.tools.file_tool import read_file, write_file
 from app.core.tools.shell_tool import run_shell
 from app.core.tools.web_search_tool import web_search
+from app.core.tools.todo_tool import mark_todo_done
 
 
 # 工具集合
@@ -14,5 +15,6 @@ TOOLS = [
     read_file,
     write_file,
     run_shell,
-    web_search
+    web_search,
+    mark_todo_done
 ]

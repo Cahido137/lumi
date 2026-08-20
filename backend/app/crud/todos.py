@@ -31,3 +31,7 @@ async def list_todos(db: AsyncSession, session_id: str) -> list[Todo]:
     stmt = select(Todo).where(Todo.session_id == session_id).order_by(Todo.position.asc())
     result = await db.execute(stmt)
     return list(result.scalars())
+
+async def get_todo_by_id(db: AsyncSession, todo_id: str) -> Todo | None:
+    """按ID查询todo"""
+    return await db.get(Todo, todo_id)
