@@ -25,7 +25,12 @@ async def chat(session_id: UUID, request: ChatRequest, db: AsyncSession = Depend
         raise HTTPException(status_code=404, detail="会话不存在")
 
     # 运行一轮 Agent
-    ai_message = await run_agent_session(str(session_id), request.content)
+    try:
+        ai_message = await run_agent_session(str(session_id), request.content)
+    except ValueError as e:
+        # 捕获会话运行器中锁守卫的异常
+        raise HTTPException(status_code=409, detail=str(e))
+    
     # 如果没有返回，说明此处中断了
     if ai_message is None:
         return success_response(

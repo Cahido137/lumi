@@ -1,5 +1,6 @@
 """会话运行器"""
 
+import asyncio
 from uuid import uuid4
 
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
@@ -32,6 +33,9 @@ from app.db.session import SessionLocal
 # 图单例
 _agent_graph = None
 
+# 会话级运行锁
+_session_lock: dict[str, asyncio.Lock] = {}  # {会话ID: 运行锁对象}
+
 def _get_agent_graph():
     """获取图单例"""
     global _agent_graph
@@ -39,6 +43,14 @@ def _get_agent_graph():
         _agent_graph = build_agent_graph(get_checkpointer())
     return _agent_graph
 
+def _get_session_lock(session_id: str) -> asyncio.Lock:
+    """获取会话级运行锁对象"""
+    lock = _session_lock.get(session_id)
+    # 如果还没有锁就创建一个锁
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_lock[session_id] = lock
+    return lock
 
 def _to_langchain_messages(rows) -> list[BaseMessage]:
     """将数据库中的消息行转化为langchain风格消息列表"""
@@ -205,37 +217,126 @@ async def _process_stream(db, session_id: str, plan_queue: list[dict], graph_inp
 
 async def run_agent_session(session_id: str, content: str) -> Message | None:
     """运行一轮 Agent 对话"""
-    # 发布开始事件
-    await event_bus.publish(AgentEvent(
-        eventType=EventType.AGENT_STARTED,
-        sessionId=session_id,
-        data=AgentStartResponse()
-    ))
+    async with _get_session_lock(session_id):
+        # 发布开始事件
+        await event_bus.publish(AgentEvent(
+            eventType=EventType.AGENT_STARTED,
+            sessionId=session_id,
+            data=AgentStartResponse()
+        ))
 
-    try:
+        try:
+            # 存在待处理的审批禁止开始新一轮的对话
+            async with SessionLocal() as db:
+                if await approvals_crud.has_pending_approval(db, session_id):
+                    raise ValueError("该会话存在未完成的审批, 请先完成审批再开始新对话")
+
+            async with SessionLocal() as db:
+                # 拼接消息
+                history = _to_langchain_messages(
+                    await messages_crud.list_message_asc(db, session_id)
+                )
+                messages = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=content)]
+
+                # 用户消息落库
+                await messages_crud.add_message(db, session_id, "user", content)
+                await db.commit()
+
+                config, thread_id = _build_config(session_id)  # 创建配置
+                grants = await approvals_crud.get_session_grants(db, session_id)  # 获取当前会话工具授权
+                final_reply, interrupted_info = await _process_stream(
+                    db, session_id, [], {"messages": messages, "grants": grants}, config
+                )
+
+                # 如果有中断信息则创建审批相关信息并落库，并且发布审批事件到总线
+                if interrupted_info is not None:
+                    execution = await tool_executions_crud.create_pending_execution(
+                        db, session_id, interrupted_info["tool"], interrupted_info["tool_input"]
+                    )
+                    approval = await approvals_crud.create_approval(
+                        db, session_id, thread_id, execution.id
+                    )
+                    await db.commit()
+                    await event_bus.publish(AgentEvent(
+                        eventType=EventType.APPROVAL_REQUIRED,
+                        sessionId=session_id,
+                        data=ApprovalRequiredResponse(
+                            approval_id=approval.id,
+                            tool=interrupted_info["tool"],
+                            tool_input=interrupted_info["tool_input"]
+                        )
+                    ))
+                    return None
+
+                # 最后回答
+                ai_message = await messages_crud.add_message(db, session_id, "assistant", final_reply)
+                await db.commit()
+
+            # 发布结束事件
+            await event_bus.publish(AgentEvent(
+                eventType=EventType.AGENT_FINISHED,
+                sessionId=session_id,
+                data=AgentFinishedResponse(reply=final_reply)
+            ))
+            return ai_message
+
+        except Exception as e:
+            # 发布错误事件
+            await event_bus.publish(AgentEvent(
+                eventType=EventType.ERROR,
+                sessionId=session_id,
+                data=ErrorResponse(message=str(e))
+            ))
+            raise
+
+
+async def resume_agent_session(approval_id: str, decision: str, scope: str = "one_time") -> str | None:
+    """审批完成，恢复图的执行"""
+    # 先取出审批单拿到会话ID, 用于获取会话锁
+    async with SessionLocal() as db:
+        approval = await approvals_crud.get_approval_by_id(db, approval_id)  # 拿到审批单
+        if approval is None:
+            raise ValueError("审批单不存在")
+        session_id = approval.session_id
+        thread_id = approval.thread_id
+
+    async with _get_session_lock(session_id):
         async with SessionLocal() as db:
-            # 拼接消息
-            history = _to_langchain_messages(
-                await messages_crud.list_message_asc(db, session_id)
-            )
-            messages = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=content)]
+            # 加锁期间二次校验, 防止等待期间审批单已被处理
+            approval = await approvals_crud.get_approval_by_id(db, approval_id)
+            if approval is None:
+                raise ValueError("审批单不存在")
+            if approval.status != "pending":
+                raise ValueError("审批单已处理")
 
-            # 用户消息落库
-            await messages_crud.add_message(db, session_id, "user", content)
+            # 更新审批单
+            await approvals_crud.update_approval(db, approval_id, decision, scope)
             await db.commit()
 
-            config, thread_id = _build_config(session_id)  # 创建配置
-            grants = await approvals_crud.get_session_grants(db, session_id)  # 获取当前会话工具授权
-            final_reply, interrupted_info = await _process_stream(
-                db, session_id, [], {"messages": messages, "grants": grants}, config
+            # 发布审批结束事件到总线
+            await event_bus.publish(AgentEvent(
+                eventType=EventType.APPROVAL_RESULT,
+                sessionId=session_id,
+                data=ApprovalResultResponse(
+                    approval_id=approval.id,
+                    status=decision
+                )
+            ))
+
+            # 恢复图的执行
+            config = {"configurable": {"thread_id": thread_id}}
+            plan_queue = await _load_plan_queue(db, session_id)
+            grants = await approvals_crud.get_session_grants(db, session_id)
+            final_reply, interrupt_info = await _process_stream(
+                db, session_id, plan_queue, Command(resume=decision, update={"grants": grants}), config
             )
 
-            # 如果有中断信息则创建审批相关信息并落库，并且发布审批事件到总线
-            if interrupted_info is not None:
+            # 再次检查是否还有中断
+            if interrupt_info is not None:
                 execution = await tool_executions_crud.create_pending_execution(
-                    db, session_id, interrupted_info["tool"], interrupted_info["tool_input"]
+                    db, session_id, interrupt_info["tool"], interrupt_info["tool_input"]
                 )
-                approval = await approvals_crud.create_approval(
+                new_approval = await approvals_crud.create_approval(
                     db, session_id, thread_id, execution.id
                 )
                 await db.commit()
@@ -243,93 +344,20 @@ async def run_agent_session(session_id: str, content: str) -> Message | None:
                     eventType=EventType.APPROVAL_REQUIRED,
                     sessionId=session_id,
                     data=ApprovalRequiredResponse(
-                        approval_id=approval.id,
-                        tool=interrupted_info["tool"],
-                        tool_input=interrupted_info["tool_input"]
+                        approval_id=new_approval.id,
+                        tool=interrupt_info["tool"],
+                        tool_input=interrupt_info["tool_input"]
                     )
                 ))
                 return None
-
-            # 最后回答
-            ai_message = await messages_crud.add_message(db, session_id, "assistant", final_reply)
+            ai_message = await messages_crud.add_message(
+                db, session_id, "assistant", final_reply
+            )
             await db.commit()
 
-        # 发布结束事件
         await event_bus.publish(AgentEvent(
             eventType=EventType.AGENT_FINISHED,
             sessionId=session_id,
             data=AgentFinishedResponse(reply=final_reply)
         ))
-        return ai_message
-
-    except Exception as e:
-        # 发布错误事件
-        await event_bus.publish(AgentEvent(
-            eventType=EventType.ERROR,
-            sessionId=session_id,
-            data=ErrorResponse(message=str(e))
-        ))
-        raise
-
-
-async def resume_agent_session(approval_id: str, decision: str, scope: str = "one_time") -> str | None:
-    """审批完成，恢复图的执行"""
-    async with SessionLocal() as db:
-        approval = await approvals_crud.get_approval_by_id(db, approval_id)  # 拿到审批单
-        if approval is None:
-            raise ValueError("审批单不存在")
-        if approval.status != "pending":
-            raise ValueError("审批单已处理")
-
-        # 更新审批单
-        await approvals_crud.update_approval(db, approval_id, decision, scope)
-        await db.commit()
-
-        # 发布审批结束事件到总线
-        await event_bus.publish(AgentEvent(
-            eventType=EventType.APPROVAL_RESULT,
-            sessionId=approval.session_id,
-            data=ApprovalResultResponse(
-                approval_id=approval.id,
-                status=decision
-            )
-        ))
-
-        # 恢复图的执行
-        config = {"configurable": {"thread_id": approval.thread_id}}
-        plan_queue = await _load_plan_queue(db, approval.session_id)
-        grants = await approvals_crud.get_session_grants(db, approval.session_id)
-        final_reply, interrupt_info = await _process_stream(
-            db, approval.session_id, plan_queue, Command(resume=decision, update={"grants": grants}), config
-        )
-
-        # 再次检查是否还有中断
-        if interrupt_info is not None:
-            execution = await tool_executions_crud.create_pending_execution(
-                db, approval.session_id, interrupt_info["tool"], interrupt_info["tool_input"]
-            )
-            new_approval = await approvals_crud.create_approval(
-                db, approval.session_id, approval.thread_id, execution.id
-            )
-            await db.commit()
-            await event_bus.publish(AgentEvent(
-                eventType=EventType.APPROVAL_REQUIRED,
-                sessionId=approval.session_id,
-                data=ApprovalRequiredResponse(
-                    approval_id=new_approval.id,
-                    tool=interrupt_info["tool"],
-                    tool_input=interrupt_info["tool_input"]
-                )
-            ))
-            return None
-        ai_message = await messages_crud.add_message(
-            db, approval.session_id, "assistant", final_reply
-        )
-        await db.commit()
-
-    await event_bus.publish(AgentEvent(
-        eventType=EventType.AGENT_FINISHED,
-        sessionId=approval.session_id,
-        data=AgentFinishedResponse(reply=final_reply)
-    ))
-    return final_reply
+        return final_reply

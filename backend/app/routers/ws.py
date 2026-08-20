@@ -12,15 +12,6 @@ from app.core.session_runner import run_agent_session
 router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
 
 
-async def _receive_loop(websocket: WebSocket, session_id: str) -> None:
-    """接收消息并在指定会话开启一轮 Agent"""
-    while True:
-        data = await websocket.receive_json()  # 等待消息
-        content = data.get("content", "").strip()
-        if not content:
-            continue
-        asyncio.create_task(run_agent_session(session_id, content))
-
 async def _send_loop(websocket: WebSocket, queue: asyncio.Queue) -> None:
     """从事件总线推送消息"""
     while True:
@@ -37,14 +28,35 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
     # 订阅事件
     queue = event_bus.subscribe(sid)
 
+    # 已创建的运行任务集合
+    tasks: set[asyncio.Task] = set()
+
+    def _on_run_done(task: asyncio.Task) -> None:
+        """运行结束清理任务引用并取出可能的异常"""
+        tasks.discard(task)
+        if not task.cancelled():
+            task.exception()  # 取出异常
+
     try:
-        # 同时开始收发任务
-        recv_task = asyncio.create_task(_receive_loop(websocket, sid))
         send_task = asyncio.create_task(_send_loop(websocket, queue))
-        await asyncio.gather(recv_task, send_task)
+        tasks.add(send_task)
+        while True:
+            data = await websocket.receive_json()  # 接收数据
+            if not isinstance(data, dict):
+                continue
+            content = str(data.get("content") or "").strip()  # 清洗数据
+            if not content:
+                continue
+            run_task = asyncio.create_task(run_agent_session(sid, content))
+            tasks.add(run_task)
+            run_task.add_done_callback(_on_run_done)
     except WebSocketDisconnect:
         pass
     except Exception:
         raise WebSocketException(code=1011, reason="服务器内部错误")
     finally:
-        event_bus.unsubscribe(sid)  # 取消订阅
+        # 断开连接后取消所有运行中的任务释放资源
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        event_bus.unsubscribe(sid)

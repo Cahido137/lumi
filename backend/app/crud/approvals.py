@@ -58,3 +58,9 @@ async def get_session_grants(db: AsyncSession, session_id: str) -> dict:
             if key not in commands:
                 commands.append(key)  # 加入命令授权
     return grants
+
+async def has_pending_approval(db: AsyncSession, session_id: str) -> bool:
+    """检查当前会话是否还有未审批的审批单"""
+    stmt = select(Approval.id).where(Approval.session_id == session_id, Approval.status == "pending").limit(1)
+    result = await db.execute(stmt)
+    return result.first() is not None
