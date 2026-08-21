@@ -8,8 +8,10 @@ from langgraph.types import interrupt
 from app.core.graph.state import AgentState, InputState, OutputState
 from app.core.llm import get_chat_model, create_planner_llm
 from app.core.tools import TOOLS
-from app.core.graph.schemas import PlanOutput
-from app.utils.dict import normalize_dict
+from app.core.graph.schemas import PlanOutput, ApprovalInterrupt
+from app.core.grants import Grants
+from app.schemas.todos import TodoItem
+from app.schemas.enums import TodoStatus, ApprovalStatus
 
 
 # 系统提示词
@@ -27,21 +29,15 @@ APPROVAL_REQUIRED_TOOLS = ["run_shell", "write_file"]
 # 构建工具名称映射字典列表
 TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
 
+# 审批消息前缀
+REJECTED_PREFIX = "[REJECTED]"
+SKIPPED_PREFIX = "[SKIPPED]"
+
 
 # 获得模型
 _model = get_chat_model()
 # 绑定工具
 _model_with_tools = _model.bind_tools(tools=TOOLS)
-
-
-def _is_granted(grants: dict, tool_name: str, args: dict) -> bool:
-    """判断工具函数是否已经被授权"""
-    # 如果工具在授权中存在
-    if tool_name in grants.get("tool", []):
-        return True
-    commands = grants.get("command", {}).get(tool_name, [])
-    # 判断是否已授权指定命令
-    return normalize_dict(args) in commands
 
 
 async def planner_node(state: AgentState) -> AgentState:
@@ -56,7 +52,7 @@ async def planner_node(state: AgentState) -> AgentState:
 
     # 构建 todos 列表
     todos = [
-        {"id": str(uuid4()), "title": item.title, "status": "pending", "position": i}
+        TodoItem(id=str(uuid4()), title=item.title, status=TodoStatus.PENDING, position=i)
         for i, item in enumerate(plans.todos)
     ]
     return {
@@ -67,8 +63,8 @@ async def model_node(state: AgentState) -> AgentState:
     """大模型节点"""
     # 将计划列表序列化为文字
     plan_lines = [
-        f"{t["position"] + 1}. {t["title"]} [{t["status"]}] (todo_id: {t["id"]})"  # 给每条任务末尾附上todo_id
-        for t in sorted(state.get("todos", []), key=lambda x: x["position"])  # 按顺序排列好任务
+        f"{todo.position + 1}. {todo.title} [{todo.status}] (todo_id: {todo.id})"  # 给每条任务末尾附上todo_id
+        for todo in sorted(state.get("todos") or [], key=lambda x: x.position)  # 按顺序排列好任务
     ]
     plan_context = SystemMessage(
         content="当前正在执行计划: \n" + "\n".join(plan_lines) + "\n严格按计划完成任务。\n完成一个计划后必须调用 mark_todo_done 工具。"
@@ -83,32 +79,31 @@ async def tool_node(state: AgentState) -> AgentState:
     """工具执行节点"""
     last_msg = state["messages"][-1]  # 获取最后一条消息
     tool_msgs = []
-    grants = state.get("grants") or {}
+    grants = Grants.model_validate(state.get("grants") or {})
     requested = False  # 记录本次节点是否已经发生过中断
     # 遍历工具调用请求
     for tc in last_msg.tool_calls:
         # 是需要审批的工具并且没有已经记录的审批授权
-        if tc["name"] in APPROVAL_REQUIRED_TOOLS and not _is_granted(grants, tc["name"], tc["args"] or {}):
+        if tc["name"] in APPROVAL_REQUIRED_TOOLS and not grants.is_granted(tc["name"], tc["args"] or {}):
             # 如果已经发生过中断了，应避免此节点中多次中断引发异常
             if requested:
                 # 向模型发送消息，让模型下一次消息单独调用工具
                 tool_msgs.append(ToolMessage(
                     name=tc["name"],
-                    content="[SKIPPED] 一次只允许提交一个审批请求, 请在下次消息单独调用此工具",
+                    content=f"{SKIPPED_PREFIX} 一次只允许提交一个审批请求, 请在下次消息单独调用此工具",
                     tool_call_id=tc["id"]
                 ))
                 continue
             requested = True
             # 工具需要审批，此处中断
-            decision = interrupt({
-                "tool": tc["name"],
-                "tool_input": tc["args"]
-            })
+            decision = interrupt(
+                ApprovalInterrupt(tool=tc["name"], tool_input=tc["args"] or {}).model_dump()  # 转化为dict传入
+            )
             # 拒绝执行情况
-            if decision == "rejected":
+            if decision == ApprovalStatus.REJECTED:
                 tool_msgs.append(ToolMessage(
                     name=tc["name"],
-                    content="[REJECTED] 用户拒绝此操作",
+                    content=f"{REJECTED_PREFIX} 用户拒绝此操作",
                     tool_call_id=tc["id"]
                 ))
                 continue

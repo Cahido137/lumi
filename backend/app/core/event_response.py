@@ -1,5 +1,8 @@
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Any
+
+from app.schemas.todos import TodoItem
+from app.schemas.enums import ApprovalStatus
 
 
 class BaseEventResponse(BaseModel):
@@ -16,7 +19,7 @@ class ErrorResponse(BaseEventResponse):
 
 class ToolStartedResponse(BaseEventResponse):
     tool: str = Field(..., description="工具")
-    tool_input: dict = Field(..., description="工具输入")
+    tool_input: dict[str, Any] = Field(..., description="工具输入")
 
 class ToolFinishedResponse(BaseEventResponse):
     tool: str = Field(..., description="工具")
@@ -26,13 +29,13 @@ class TokenResponse(BaseEventResponse):
     token: str = Field(..., description="本token内容")
 
 class PlanUpdatedResponse(BaseEventResponse):
-    todos: list[dict] = Field(..., description="完整todo列表")
+    todos: list[TodoItem] = Field(..., description="完整todo列表")
 
 class ApprovalRequiredResponse(BaseEventResponse):
     approval_id: str = Field(..., description="审批ID")
     tool: str = Field(..., description="待审批工具")
-    tool_input: dict = Field(..., description="工具输入")
+    tool_input: dict[str, Any] = Field(..., description="工具输入")
 
 class ApprovalResultResponse(BaseEventResponse):
     approval_id: str = Field(..., description="审批ID")
-    status: Literal["approved", "rejected"] = Field(..., description="审批结果")
+    status: ApprovalStatus = Field(..., description="审批结果")

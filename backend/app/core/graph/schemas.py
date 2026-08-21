@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from typing import Any
 
 
 class PlanItem(BaseModel):
@@ -8,3 +9,8 @@ class PlanItem(BaseModel):
 class PlanOutput(BaseModel):
     """planner的结构化输出"""
     todos: list[PlanItem] = Field(..., description="计划执行列表")
+
+class ApprovalInterrupt(BaseModel):
+    """审批中断体"""
+    tool: str = Field(..., description="待审批工具名")
+    tool_input: dict[str, Any] = Field(default_factory=dict, description="工具入参")

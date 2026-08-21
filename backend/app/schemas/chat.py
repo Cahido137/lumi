@@ -1,6 +1,8 @@
 from pydantic import BaseModel, Field
 from datetime import datetime
 
+from app.schemas.enums import MessageRole
+
 
 class ChatRequest(BaseModel):
     """用户消息发送请求"""
@@ -15,7 +17,7 @@ class ChatResponse(BaseModel):
 class MessageSingleResponse(BaseModel):
     """单条消息回复"""
     id: str
-    role: str
+    role: MessageRole
     content: str
     created_at: datetime = Field(..., alias="createdAt")
 

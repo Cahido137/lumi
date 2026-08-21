@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # 导入消息 ORM
 from app.db.models import Message
+from app.schemas.enums import MessageRole
 
 
 async def list_messages(db: AsyncSession, session_id: str, skip: int = 0, limit: int = 20):
@@ -19,8 +20,10 @@ async def list_message_asc(db: AsyncSession, session_id: str):
     result = await db.execute(stmt)
     return result.scalars().all()
 
-async def add_message(db: AsyncSession, session_id: str, role: str, content: str) -> Message:
+async def add_message(db: AsyncSession, session_id: str, role: MessageRole | str, content: str) -> Message:
     """新增消息并返回消息对象"""
+    if isinstance(role, MessageRole):
+        role = role.value
     message = Message(session_id=session_id, role=role, content=content)  # 创建消息 ORM
     db.add(message)  # 向数据库添加消息
     await db.flush()

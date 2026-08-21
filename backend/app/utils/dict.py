@@ -1,7 +1,8 @@
 import json
+from typing import Any
 
 
-def normalize_dict(data: dict) -> str:
+def normalize_dict(data: dict[str, Any] | None) -> str:
     """将字典序列化为json字符串"""
     if data is None:
         data = {}
