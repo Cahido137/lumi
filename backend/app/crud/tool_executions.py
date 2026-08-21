@@ -1,6 +1,8 @@
 """工具执行的 CRUD 操作"""
 
-from sqlalchemy import update, func, select
+from datetime import datetime
+
+from sqlalchemy import update, func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ToolExecution
@@ -40,3 +42,9 @@ async def get_pending_execution(db: AsyncSession, session_id: str):
     )
     result = await db.execute(stmt)
     return result.scalars().first()
+
+async def delete_execution_after(db: AsyncSession, session_id: str, started_at: datetime) -> None:
+    """删除指定会话中某个时间点之后开始的工具执行记录"""
+    stmt = delete(ToolExecution).where(ToolExecution.session_id == session_id, ToolExecution.started_at > started_at)
+    await db.execute(stmt)
+    await db.flush()

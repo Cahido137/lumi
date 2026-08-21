@@ -14,9 +14,16 @@ from app.core.event_response import (
 )
 from app.core.graph.builder import SYSTEM_PROMPT
 from app.core.plan_queue import PlanQueue
+from app.core.event_response import RunCancelledResponse
 from app.core.session_runner.context import StreamResult
 from app.core.session_runner.helpers import build_config, load_plan_queue, to_langchain_messages
-from app.core.session_runner.state import get_session_lock
+from app.core.session_runner.state import (
+    get_session_lock,
+    get_cancel_event,
+    _active_runs,
+    CANCEL_MESSAGE,
+    RunCancelledError
+)
 from app.core.session_runner.stream import process_stream
 from app.crud import approvals as approvals_crud
 from app.crud import messages as messages_crud
@@ -31,17 +38,29 @@ from app.schemas.enums import (
 )
 
 
-async def run_agent_session(session_id: str, content: str) -> Message | None:
-    """运行一轮 Agent 对话"""
+async def run_agent_session(session_id: str, content: str, *, user_message_id: str | None = None) -> Message | None:
+    """
+    运行一轮 Agent 对话
+    
+    Args:
+        session_id: 会话ID
+        content: 本轮用户输入
+        user_message_id: 重试场景下复用已有的用户消息ID
+    """
     async with get_session_lock(session_id):
-        # 发布开始事件
-        await event_bus.publish(AgentEvent(
-            eventType=EventType.AGENT_STARTED,
-            sessionId=session_id,
-            data=AgentStartResponse()
-        ))
+        # 清除上一次遗留的取消状态
+        cancel_event = get_cancel_event(session_id)
+        cancel_event.clear()
+        _active_runs.add(session_id)  # 将本会话加入运行队列
 
         try:
+            # 发布开始事件
+            await event_bus.publish(AgentEvent(
+                eventType=EventType.AGENT_STARTED,
+                sessionId=session_id,
+                data=AgentStartResponse()
+            ))
+
             # 存在待处理的审批禁止开始新一轮的对话
             async with SessionLocal() as db:
                 if await approvals_crud.has_pending_approval(db, session_id):
@@ -49,21 +68,25 @@ async def run_agent_session(session_id: str, content: str) -> Message | None:
 
             async with SessionLocal() as db:
                 # 拼接消息
-                history = to_langchain_messages(
-                    await messages_crud.list_message_asc(db, session_id)
-                )
+                history_row = await messages_crud.list_message_asc(db, session_id)
+                # 如果要复用消息的话，将这条消息排除在外
+                if user_message_id is not None:
+                    history_row = [row for row in history_row if row.id != user_message_id]
+                history = to_langchain_messages(history_row)
                 messages = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=content)]
 
                 # 用户消息落库
-                await messages_crud.add_message(db, session_id, MessageRole.USER, content)
-                await db.commit()
+                if user_message_id is None:
+                    await messages_crud.add_message(db, session_id, MessageRole.USER, content)
+                    await db.commit()
 
                 run_context = build_config(session_id)  # 创建配置
                 grants = await approvals_crud.get_session_grants(db, session_id)  # 获取当前会话工具授权
                 stream_result: StreamResult = await process_stream(
                     db=db, session_id=session_id, plan_queue=PlanQueue(),
                     graph_input={"messages": messages, "grants": grants.model_dump()},
-                    config=run_context.config
+                    config=run_context.config,
+                    cancel_event=cancel_event
                 )
 
                 # 如果有中断信息则创建审批相关信息并落库，并且发布审批事件到总线
@@ -98,6 +121,24 @@ async def run_agent_session(session_id: str, content: str) -> Message | None:
             ))
             return ai_message
 
+        # 如果遇到打断
+        except RunCancelledError as e:
+            partial_id = None
+            async with SessionLocal() as db:
+                # 如果存在记录下来的已经流式输出的部分模型消息，将这部分消息落库作为一条新的模型消息
+                if e.streamed_text:
+                    partial = await messages_crud.add_message(db, session_id, MessageRole.ASSISTANT, e.streamed_text)
+                    partial_id = partial.id  # 记录下新消息的ID
+                await messages_crud.add_message(db, session_id, MessageRole.SYSTEM, CANCEL_MESSAGE)  # 将打断的消息作为系统消息插入
+                await db.commit()
+            # 发布打断事件
+            await event_bus.publish(AgentEvent(
+                eventType=EventType.RUN_CANCELLED,
+                sessionId=session_id,
+                data=RunCancelledResponse(message=e.message, message_id=partial_id)
+            ))
+            raise
+
         except Exception as e:
             # 发布错误事件
             await event_bus.publish(AgentEvent(
@@ -106,6 +147,10 @@ async def run_agent_session(session_id: str, content: str) -> Message | None:
                 data=ErrorResponse(message=str(e))
             ))
             raise
+
+        finally:
+            # 将当前会话清出运行队列
+            _active_runs.discard(session_id)
 
 
 async def resume_agent_session(approval_id: str, decision: ApprovalStatus, scope: ApprovalScope = ApprovalScope.ONE_TIME) -> str | None:
@@ -118,75 +163,132 @@ async def resume_agent_session(approval_id: str, decision: ApprovalStatus, scope
         session_id = approval.session_id
         thread_id = approval.thread_id
 
-    async with get_session_lock(session_id):
-        async with SessionLocal() as db:
-            # 加锁期间二次校验, 防止等待期间审批单已被处理
-            approval = await approvals_crud.get_approval_by_id(db, approval_id)
-            if approval is None:
-                raise ValueError("审批单不存在")
-            if approval.status != ApprovalStatus.PENDING.value:
-                raise ValueError("审批单已处理")
+    try:
+        async with get_session_lock(session_id):
+            # 清除遗留的取消状态
+            cancel_event  = get_cancel_event(session_id)
+            cancel_event.clear()
+            _active_runs.add(session_id)
 
-            # 更新审批单
-            await approvals_crud.update_approval(db, approval_id, decision, scope)
-            await db.commit()
+            async with SessionLocal() as db:
+                # 加锁期间二次校验, 防止等待期间审批单已被处理
+                approval = await approvals_crud.get_approval_by_id(db, approval_id)
+                if approval is None:
+                    raise ValueError("审批单不存在")
+                if approval.status != ApprovalStatus.PENDING.value:
+                    raise ValueError("审批单已处理")
 
-            # 发布审批结束事件到总线
-            await event_bus.publish(AgentEvent(
-                eventType=EventType.APPROVAL_RESULT,
-                sessionId=session_id,
-                data=ApprovalResultResponse(
-                    approval_id=approval.id,
-                    status=decision
-                )
-            ))
-
-            # 恢复图的执行
-            config = {"configurable": {"thread_id": thread_id}}
-            plan_queue = await load_plan_queue(db, session_id)
-            grants = await approvals_crud.get_session_grants(db, session_id)
-            try:
-                stream_result: StreamResult = await process_stream(
-                    db, session_id, plan_queue, Command(resume=decision.value, update={"grants": grants.model_dump()}), config
-                )
-            except Exception as e:
-                # 出现异常回滚审批单
-                await approvals_crud.revert_approval(db, approval_id)
+                # 更新审批单
+                await approvals_crud.update_approval(db, approval_id, decision, scope)
                 await db.commit()
-                await event_bus.publish(AgentEvent(
-                    eventType=EventType.ERROR,
-                    sessionId=session_id,
-                    data=ErrorResponse(message=f"恢复执行失败: {e}")
-                ))
-                raise
 
-            # 再次检查是否还有中断
-            if stream_result.interrupt is not None:
-                execution = await tool_executions_crud.create_pending_execution(
-                    db, session_id, stream_result.interrupt.tool, stream_result.interrupt.tool_input
-                )
-                new_approval = await approvals_crud.create_approval(
-                    db, session_id, thread_id, execution.id
-                )
-                await db.commit()
+                # 发布审批结束事件到总线
                 await event_bus.publish(AgentEvent(
-                    eventType=EventType.APPROVAL_REQUIRED,
+                    eventType=EventType.APPROVAL_RESULT,
                     sessionId=session_id,
-                    data=ApprovalRequiredResponse(
-                        approval_id=new_approval.id,
-                        tool=stream_result.interrupt.tool,
-                        tool_input=stream_result.interrupt.tool_input
+                    data=ApprovalResultResponse(
+                        approval_id=approval.id,
+                        status=decision
                     )
                 ))
-                return None
-            ai_message = await messages_crud.add_message(
-                db, session_id, MessageRole.ASSISTANT, stream_result.final_reply
-            )
-            await db.commit()
 
+                # 恢复图的执行
+                config = {"configurable": {"thread_id": thread_id}}
+                plan_queue = await load_plan_queue(db, session_id)
+                grants = await approvals_crud.get_session_grants(db, session_id)
+                try:
+                    stream_result: StreamResult = await process_stream(
+                        db, session_id, plan_queue, Command(resume=decision.value, update={"grants": grants.model_dump()}), config, cancel_event
+                    )
+                except RunCancelledError:
+                    raise
+                except Exception as e:
+                    # 出现异常回滚审批单
+                    await approvals_crud.revert_approval(db, approval_id)
+                    await db.commit()
+                    await event_bus.publish(AgentEvent(
+                        eventType=EventType.ERROR,
+                        sessionId=session_id,
+                        data=ErrorResponse(message=f"恢复执行失败: {e}")
+                    ))
+                    raise
+
+                # 再次检查是否还有中断
+                if stream_result.interrupt is not None:
+                    execution = await tool_executions_crud.create_pending_execution(
+                        db, session_id, stream_result.interrupt.tool, stream_result.interrupt.tool_input
+                    )
+                    new_approval = await approvals_crud.create_approval(
+                        db, session_id, thread_id, execution.id
+                    )
+                    await db.commit()
+                    await event_bus.publish(AgentEvent(
+                        eventType=EventType.APPROVAL_REQUIRED,
+                        sessionId=session_id,
+                        data=ApprovalRequiredResponse(
+                            approval_id=new_approval.id,
+                            tool=stream_result.interrupt.tool,
+                            tool_input=stream_result.interrupt.tool_input
+                        )
+                    ))
+                    return None
+                ai_message = await messages_crud.add_message(
+                    db, session_id, MessageRole.ASSISTANT, stream_result.final_reply
+                )
+                await db.commit()
+
+            await event_bus.publish(AgentEvent(
+                eventType=EventType.AGENT_FINISHED,
+                sessionId=session_id,
+                data=AgentFinishedResponse(reply=stream_result.final_reply)
+            ))
+            return stream_result.final_reply
+
+    except RunCancelledError as e:
+        partial_id = None
+        async with SessionLocal() as db:
+            # 如果存在记录下来的已经流式输出的部分模型消息，将这部分消息落库作为一条新的模型消息
+            if e.streamed_text:
+                partial = await messages_crud.add_message(db, session_id, MessageRole.ASSISTANT, e.streamed_text)
+                partial_id = partial.id  # 记录下新消息的ID
+            await messages_crud.add_message(db, session_id, MessageRole.SYSTEM, CANCEL_MESSAGE)  # 将打断的消息作为系统消息插入
+            await db.commit()
+        # 发布打断事件
         await event_bus.publish(AgentEvent(
-            eventType=EventType.AGENT_FINISHED,
+            eventType=EventType.RUN_CANCELLED,
             sessionId=session_id,
-            data=AgentFinishedResponse(reply=stream_result.final_reply)
+            data=RunCancelledResponse(message=e.message, message_id=partial_id)
         ))
-        return stream_result.final_reply
+        raise
+
+    finally:
+        # 将当前会话清出运行队列
+        _active_runs.discard(session_id)
+
+
+async def retry_agent_session(session_id: str, message_id: str, new_content: str | None) -> Message | None:
+    """重新运行某条用户消息"""
+    async with SessionLocal() as db:
+        message = await messages_crud.get_message_by_id(db, message_id)
+        # 检查此消息是否存在
+        if message is None or message.session_id != session_id:
+            raise ValueError("消息不存在")
+        # 检查是否是用户消息
+        if message.role != MessageRole.USER.value:
+            raise ValueError("非用户消息无法重试")
+        # 检查后续是否有正常对话
+        if await messages_crud.has_user_message_after(db, session_id, message.created_at):
+            raise ValueError("该消息后存在新对话, 无法重试")
+
+        # 检查消息是否被重新编辑了，重新编辑了才采用新消息，否则沿用旧消息
+        content = new_content if new_content is not None else message.content
+        # 清理此消息之后的残留
+        await messages_crud.delete_messages_after(db, session_id, message.created_at)
+        await approvals_crud.delete_approval_after(db, session_id, message.created_at)
+        await tool_executions_crud.delete_execution_after(db, session_id, message.created_at)
+        if new_content is not None:
+            await messages_crud.update_message_content(db, message_id, new_content)
+        await db.commit()
+
+    # 重跑消息
+    return await run_agent_session(session_id, content, user_message_id=message_id)

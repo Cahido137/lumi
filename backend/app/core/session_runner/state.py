@@ -6,7 +6,6 @@ import asyncio
 # 会话级运行锁
 _session_lock: dict[str, asyncio.Lock] = {}  # {会话ID: 运行锁对象}
 
-
 def get_session_lock(session_id: str) -> asyncio.Lock:
     """获取会话级运行锁对象"""
     lock = _session_lock.get(session_id)
@@ -15,3 +14,59 @@ def get_session_lock(session_id: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _session_lock[session_id] = lock
     return lock
+
+
+# 会话级取消事件
+_cancel_events: dict[str, asyncio.Event] = {}  # {会话ID: 取消事件对象}
+
+def get_cancel_event(session_id: str) -> asyncio.Event:
+    """获取会话级取消事件对象"""
+    event = _cancel_events.get(session_id)
+    if event is None:
+        event = asyncio.Event()
+        _cancel_events[session_id] = event
+    return event
+
+
+_active_runs: set[str] = set()  # 正在运行的会话ID集合
+_active_tasks: dict[str, asyncio.Task] = {}  # {会话ID: 图流生产者任务}
+
+def register_active_task(session_id: str, task: asyncio.Task) -> None:
+    """给指定会话登记图流生产者任务"""
+    _active_tasks[session_id] = task
+
+def unregister_active_task(session_id: str) -> None:
+    """注销指定会话的图流生产者任务"""
+    _active_tasks.pop(session_id, None)
+
+
+# 中断哨兵
+_CANCELLED = object()
+
+# 中断插入消息文案
+CANCEL_MESSAGE = "[对话已被用户打断]"
+
+
+class RunCancelledError(Exception):
+    """运行时被打断异常"""
+    def __init__(self, message: str = CANCEL_MESSAGE, streamed_text: str = ""):
+        """
+        Args:
+            message: 中断提示消息
+            streamed_text: 中断前已经流式发出的模型回复文本
+        """
+        super().__init__(message)
+        self.message = message
+        self.streamed_text = streamed_text
+
+
+def request_cancel_session(session_id: str) -> bool:
+    """请求中断会话运行"""
+    running = session_id in _active_runs  # 判断是否是正在运行的会话
+    if running:
+        task = _active_tasks.get(session_id)
+        # 如果确实存在正在运行的任务
+        if task is not None and not task.done():
+            task.cancel()  # 立即取消任务
+    get_cancel_event(session_id).set()
+    return running

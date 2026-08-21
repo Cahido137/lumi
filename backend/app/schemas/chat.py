@@ -26,3 +26,12 @@ class MessageListResponse(BaseModel):
     items: list[MessageSingleResponse]
     page: int
     page_size: int = Field(..., alias="pageSize")
+
+class RetryRequest(BaseModel):
+    """重新运行请求"""
+    content: str | None = Field(None, min_length=1, max_length=8000, description="编辑后消息, 没重新编辑为 None")
+
+class CancelResponse(BaseModel):
+    """打断请求响应"""
+    session_id: str = Field(..., alias="sessionId")
+    cancelled: bool = Field(..., description="是否存在被打断的运行")

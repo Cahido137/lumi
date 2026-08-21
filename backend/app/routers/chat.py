@@ -2,14 +2,14 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.session_runner import run_agent_session
+from app.core.session_runner import RunCancelledError, retry_agent_session, request_cancel_session
 from app.crud import messages as messages_crud
 from app.crud import sessions as sessions_crud
 from app.db.session import get_db
-from app.schemas.chat import ChatRequest, ChatResponse, MessageListResponse, MessageSingleResponse
+from app.schemas.chat import ChatRequest, ChatResponse, MessageListResponse, MessageSingleResponse, CancelResponse, RetryRequest
 from app.utils.response import success_response
 
 
@@ -27,6 +27,8 @@ async def chat(session_id: UUID, request: ChatRequest, db: AsyncSession = Depend
     # 运行一轮 Agent
     try:
         ai_message = await run_agent_session(str(session_id), request.content)
+    except RunCancelledError as e:
+        return success_response(message=e.message, data=None)
     except ValueError as e:
         # 捕获会话运行器中锁守卫的异常
         raise HTTPException(status_code=409, detail=str(e))
@@ -64,4 +66,33 @@ async def list_messages(
     return success_response(
         message="查询消息列表成功",
         data=MessageListResponse(items=message_list, page=page, pageSize=page_size)
+    )
+
+@router.post("/{session_id}/cancel")
+async def cancel_run(session_id: UUID):
+    """打断当前正在运行的对话"""
+    cancelled = request_cancel_session(str(session_id))  # 发送打断请求
+    return success_response(
+        message="已发送打断请求" if cancelled else "当前没有正在运行的对话",
+        data=CancelResponse(sessionId=str(session_id), cancelled=cancelled)
+    )
+
+@router.post("/{session_id}/messages/{message_id}/retry")
+async def retry_message(session_id: UUID, message_id: UUID, request: RetryRequest, db: AsyncSession = Depends(get_db)):
+    """重新运行对话"""
+    session = await sessions_crud.get_session_by_id(db, str(session_id))
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    try:
+        ai_message = await retry_agent_session(str(session_id), str(message_id), request.content)  # 重新运行
+    except RunCancelledError as e:
+        return success_response(message=e.message, data=None)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    if ai_message is None:
+        return success_response(message="任务暂停, 等待人工审批", data=None)
+    return success_response(
+        message="已重新运行对话",
+        data=ChatResponse(sessionId=str(session_id), reply=ai_message.content, createdAt=ai_message.created_at)
     )

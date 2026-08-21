@@ -17,6 +17,10 @@ class AgentFinishedResponse(BaseEventResponse):
 class ErrorResponse(BaseEventResponse):
     message: str = Field(..., description="错误消息")
 
+class RunCancelledResponse(BaseEventResponse):
+    message: str = Field(..., description="中断说明")
+    message_id: str | None = Field(None, description="保留的部分回复消息ID, 没有保留为None")
+
 class ToolStartedResponse(BaseEventResponse):
     tool: str = Field(..., description="工具")
     tool_input: dict[str, Any] = Field(..., description="工具输入")

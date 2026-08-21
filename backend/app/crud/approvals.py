@@ -1,6 +1,8 @@
 """审批单的 CRUD 操作"""
 
-from sqlalchemy import update, func, select
+from datetime import datetime
+
+from sqlalchemy import update, func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.grants import Grants
@@ -73,5 +75,11 @@ async def has_pending_approval(db: AsyncSession, session_id: str) -> bool:
 async def revert_approval(db: AsyncSession, approval_id: str) -> None:
     """回滚审批单状态"""
     stmt = update(Approval).where(Approval.id == approval_id).values(status=ApprovalStatus.PENDING.value, scope=ApprovalScope.ONE_TIME.value, decided_at=None)
+    await db.execute(stmt)
+    await db.flush()
+
+async def delete_approval_after(db: AsyncSession, session_id: str, created_at: datetime) -> None:
+    """删除指定会话中某个时间点之后创建的审批单"""
+    stmt = delete(Approval).where(Approval.session_id == session_id, Approval.created_at > created_at)
     await db.execute(stmt)
     await db.flush()

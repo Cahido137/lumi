@@ -1,6 +1,8 @@
 """消息数据库操作"""
 
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # 导入消息 ORM
@@ -28,3 +30,35 @@ async def add_message(db: AsyncSession, session_id: str, role: MessageRole | str
     db.add(message)  # 向数据库添加消息
     await db.flush()
     return message
+
+async def get_message_by_id(db: AsyncSession, message_id: str) -> Message | None:
+    """按ID查询消息"""
+    return await db.get(Message, message_id)
+
+async def update_message_content(db: AsyncSession, message_id: str, content: str) -> None:
+    """更新消息内容"""
+    stmt = update(Message).where(Message.id == message_id).values(content=content)
+    await db.execute(stmt)
+    await db.flush()
+
+async def has_user_message_after(db: AsyncSession, session_id: str, created_at: datetime) -> bool:
+    """检查某个时间点后是否还有用户消息"""
+    stmt = (
+        select(Message.id)
+        .where(
+            Message.session_id == session_id,
+            Message.role == MessageRole.USER.value,
+            Message.created_at > created_at
+        ).limit(1)
+    )
+    result = await db.execute(stmt)
+    return result.first() is not None
+
+async def delete_messages_after(db: AsyncSession, session_id: str, created_at: datetime) -> None:
+    """删除指定会话中某个时间点之后的所有消息"""
+    stmt = (
+        delete(Message)
+        .where(Message.session_id == session_id, Message.created_at > created_at)
+    )
+    await db.execute(stmt)
+    await db.flush()

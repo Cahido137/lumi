@@ -7,6 +7,7 @@ class EventType(str, Enum):
     AGENT_STARTED = "agent_started"  # data: {}
     AGENT_FINISHED = "agent_finished"  # data: {"reply": 回复}
     ERROR = "error"  # data: {"message": 错误消息}
+    RUN_CANCELLED = "run_cancelled"  # data: {"message_id": 中断说明, "message_id": 部分回复的消息ID}
 
     # 工具调用相关
     TOOL_STARTED = "tool_started"  # data: {"tool": 工具, "tool_input": 工具输入}
