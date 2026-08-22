@@ -6,9 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.session_runner import run_agent_session
 from app.core.session_runner import RunCancelledError, retry_agent_session, request_cancel_session
+from app.core.deps import get_current_user, get_owned_session_or_404
 from app.crud import messages as messages_crud
 from app.crud import sessions as sessions_crud
 from app.db.session import get_db
+from app.db.models import User
 from app.schemas.chat import ChatRequest, ChatResponse, MessageListResponse, MessageSingleResponse, CancelResponse, RetryRequest
 from app.utils.response import success_response
 
@@ -17,12 +19,14 @@ router = APIRouter(prefix="/api/sessions", tags=["chat"])
 
 
 @router.post("/{session_id}/chat")
-async def chat(session_id: UUID, request: ChatRequest, db: AsyncSession = Depends(get_db)):
+async def chat(session_id: UUID, 
+               request: ChatRequest, 
+               current_user: User = Depends(get_current_user),
+               db: AsyncSession = Depends(get_db)
+):
     """收到消息并运行 Agent"""
     # 校验会话ID是否存在
-    session = await sessions_crud.get_session_by_id(db, str(session_id))
-    if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    await get_owned_session_or_404(db, str(session_id), current_user)
 
     # 运行一轮 Agent
     try:
@@ -54,9 +58,11 @@ async def list_messages(
     session_id: UUID,
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, alias="pageSize", ge=1, le=100, description="每页条数"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """分页获取历史消息列表"""
+    await get_owned_session_or_404(db, str(session_id), current_user)
     skip = (page - 1) * page_size
     messages = await messages_crud.list_messages(db, str(session_id), skip, page_size)
     message_list = [
@@ -69,8 +75,13 @@ async def list_messages(
     )
 
 @router.post("/{session_id}/cancel")
-async def cancel_run(session_id: UUID):
+async def cancel_run(
+    session_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """打断当前正在运行的对话"""
+    await get_owned_session_or_404(db, str(session_id), current_user)
     cancelled = request_cancel_session(str(session_id))  # 发送打断请求
     return success_response(
         message="已发送打断请求" if cancelled else "当前没有正在运行的对话",
@@ -78,11 +89,15 @@ async def cancel_run(session_id: UUID):
     )
 
 @router.post("/{session_id}/messages/{message_id}/retry")
-async def retry_message(session_id: UUID, message_id: UUID, request: RetryRequest, db: AsyncSession = Depends(get_db)):
+async def retry_message(
+    session_id: UUID, 
+    message_id: UUID, 
+    request: RetryRequest, 
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """重新运行对话"""
-    session = await sessions_crud.get_session_by_id(db, str(session_id))
-    if session is None:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    await get_owned_session_or_404(db, str(session_id), current_user)
     try:
         ai_message = await retry_agent_session(str(session_id), str(message_id), request.content)  # 重新运行
     except RunCancelledError as e:

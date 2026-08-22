@@ -10,3 +10,5 @@ asyncpg
 alembic
 pydantic
 pydantic-settings
+pyjwt
+bcrypt

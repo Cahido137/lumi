@@ -1,7 +1,7 @@
 from uuid import uuid4
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid, func, BigInteger, Identity
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -12,12 +12,25 @@ def gen_uuid() -> str:
     """生成字符串UUID"""
     return str(uuid4())
 
+class User(Base):
+    """用户信息表"""
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="用户唯一标识ID")
+    uid: Mapped[int] = mapped_column(BigInteger, Identity(start=10000), unique=True, index=True, comment="用户UID")
+    username: Mapped[str] = mapped_column(String(20), unique=True, comment="用户名(唯一)")
+    nickname: Mapped[str | None] = mapped_column(String(50), comment="昵称")
+    password_hash: Mapped[str] = mapped_column(String(200), comment="密码哈希")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), comment="用户注册时间")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="用户信息更新时间")
+
 
 class Session(Base):
     """会话表, 一次对话为一条会话记录"""
     __tablename__ = "sessions"
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="会话唯一标识ID")
+    user_id: Mapped[str] = mapped_column(ForeignKey(User.id, ondelete="CASCADE"), index=True, comment="会话所属用户ID")
     title: Mapped[str] = mapped_column(String(200), default="新会话", comment="会话标题")
     status: Mapped[str] = mapped_column(String(20), default="active", comment="active=进行中, archived=已归档")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")

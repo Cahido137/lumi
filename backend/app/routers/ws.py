@@ -3,10 +3,15 @@
 import asyncio
 from uuid import UUID
 
+import jwt as pyjwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketException
 
 from app.core.event_bus import event_bus
 from app.core.session_runner import run_agent_session
+from app.crud import sessions as sessions_crud
+from app.crud import users as users_crud
+from app.db.session import SessionLocal
+from app.utils.security import decode_access_token
 
 
 router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
@@ -23,6 +28,24 @@ async def _send_loop(websocket: WebSocket, queue: asyncio.Queue) -> None:
 async def websocket_chat(websocket: WebSocket, session_id: UUID):
     """实时聊天"""
     sid = str(session_id)
+    token = websocket.query_params.get("token")
+    try:
+        uid: int = decode_access_token(token)
+    except (pyjwt.PyJWTError, AttributeError, ValueError):
+        await websocket.close(code=4401)  # 令牌校验未通过关闭连接
+        return
+
+    async with SessionLocal() as db:
+        user = await users_crud.get_user_by_uid(db, uid)
+        if user is None:
+            await websocket.close(code=4401)
+            return
+        session = await sessions_crud.get_session_for_user(db, sid, user.id)
+        if session is None:
+            await websocket.close(code=4404)  # 会话不存在或无权限
+            return
+
+
     # 握手连接
     await websocket.accept()
     # 订阅事件

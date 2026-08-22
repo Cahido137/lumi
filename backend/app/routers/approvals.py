@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.session_runner import resume_agent_session, RunCancelledError
+from app.core.deps import get_current_user, get_owned_approval_or_404
 from app.db.session import get_db
+from app.db.models import User
 from app.schemas.approvals import ApprovalDecisionRequest
 from app.utils.response import success_response
 
@@ -14,8 +16,14 @@ from app.utils.response import success_response
 router = APIRouter(prefix="/api/approvals", tags=["approval"])
 
 @router.post("/{approval_id}/decide")
-async def decide_approval(approval_id: UUID, request: ApprovalDecisionRequest, db: AsyncSession = Depends(get_db)):
+async def decide_approval(
+    approval_id: UUID, 
+    request: ApprovalDecisionRequest, 
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """处理审批决定"""
+    await get_owned_approval_or_404(db, str(approval_id), current_user)
     try:
         reply = await resume_agent_session(str(approval_id), request.status, request.scope)
     except RunCancelledError as e:

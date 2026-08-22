@@ -36,6 +36,18 @@ class DBSettings(BaseSettings):
     )
     database_url: str = Field(..., description="数据库连接URL")
 
+
+# 认证配置信息
+class AuthSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=BASE_DIR / ".env", 
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
+    jwt_secret: str = Field(..., description="JWT签名密钥")
+    jwt_algorithm: str = Field("HS256", description="JWT签名算法")
+    jwt_expire_days: int = Field(7, gt=0, description="Token有效期")
+
 @lru_cache
 def get_llmsettings() -> LLMSettings:
     """获得大模型配置单例"""
@@ -45,3 +57,8 @@ def get_llmsettings() -> LLMSettings:
 def get_dbsettings() -> DBSettings:
     """获得数据库配置单例"""
     return DBSettings()
+
+@lru_cache
+def get_authsettings() -> AuthSettings:
+    """获得认证配置单例"""
+    return AuthSettings()
