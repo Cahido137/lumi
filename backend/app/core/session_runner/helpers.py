@@ -1,8 +1,9 @@
 """会话运行器辅助函数"""
 
 from uuid import uuid4
+from collections.abc import Sequence
 
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage,BaseMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.event_bus import event_bus
@@ -12,16 +13,25 @@ from app.core.plan_queue import PlanQueue
 from app.core.session_runner.context import RunContext
 from app.crud import todos as todos_crud
 from app.schemas.enums import EventType, MessageRole
+from app.db.models import Message
 
 
-def to_langchain_messages(rows) -> list[BaseMessage]:
+# 数据库消息角色映射
+_ROLE_MESSAGE: dict[str, type[BaseMessage]] = {
+    MessageRole.USER.value: HumanMessage,
+    MessageRole.ASSISTANT.value: AIMessage,
+    MessageRole.SYSTEM.value: SystemMessage
+}
+
+def to_langchain_messages(rows: Sequence[Message]) -> list[BaseMessage]:
     """将数据库中的消息行转化为langchain风格消息列表"""
     messages: list[BaseMessage] = []
     for row in rows:
-        if row.role == MessageRole.USER:
-            messages.append(HumanMessage(content=row.content))
-        elif row.role == MessageRole.ASSISTANT:
-            messages.append(AIMessage(content=row.content))
+        factory = _ROLE_MESSAGE.get(row.role)
+        # 不支持的消息类型
+        if factory is None:
+            raise ValueError("不支持的消息类型")
+        messages.append(factory(content=row.content))
     return messages
 
 def build_config(session_id: str) -> RunContext:
