@@ -22,7 +22,7 @@ from app.core.session_runner.state import (
     register_active_task,
     unregister_active_task
 )
-from app.core.tools.todo_tool import TODO_MARKER_TOOL
+from app.core.tools.todo_tool import TODO_MARKER_TOOLS
 from app.crud import todos as todos_crud
 from app.crud import tool_executions as tool_executions_crud
 from app.schemas.enums import EventType, TodoStatus, ExecutionStatus
@@ -124,27 +124,18 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
             if "model_node" in payload:
                 msg = payload["model_node"]["messages"][-1]  # 拿到最近一条消息
                 if msg.tool_calls:
-                    # 提取出除开todo标记工具的其他工具
-                    real_calls = [tool for tool in msg.tool_calls if tool["name"] != TODO_MARKER_TOOL]
-                    # 确保每次只有至多一个todo处于执行中
-                    # 从队列中取出所有todo计划，只有在是除todo标记工具执行并且没有正在运行的todo才将下一条todo标记为执行中
-                    if real_calls and not plan_queue.has_in_progress():
-                        # 开始下一个计划
-                        current = plan_queue.start_next()
-                        if current is not None:
-                            # 更新计划状态
-                            await todos_crud.update_todo_status(db, current.id, TodoStatus.IN_PROGRESS)
-                            await db.commit()
-                            await publish_plan(session_id, plan_queue)
-                    # 发布工具开始执行事件
                     for tool in msg.tool_calls:
-                        # 如果调用的是todo标记工具，直接跳过，不进行工具调用事件发布
-                        if tool["name"] == TODO_MARKER_TOOL:
+                        # todo标记工具不发布
+                        if tool["name"] in TODO_MARKER_TOOLS:
                             continue
+                        # 发布工具开始执行事件
                         await event_bus.publish(AgentEvent(
                             eventType=EventType.TOOL_STARTED,
                             sessionId=session_id,
-                            data=ToolStartedResponse(tool=tool["name"], tool_input=tool["args"] or {})
+                            data=ToolStartedResponse(
+                                tool=tool["name"],
+                                tool_input=tool["args"] or {}
+                            )
                         ))
                 else:
                     final_reply = msg.content
@@ -153,7 +144,7 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
             if "tool_node" in payload:
                 for tm in payload["tool_node"]["messages"]:
                     # 如果是todo标记工具，同步计划状态后直接跳过
-                    if tm.name == TODO_MARKER_TOOL:
+                    if tm.name in TODO_MARKER_TOOLS:
                         plan_queue = await load_plan_queue(db, session_id)  # 重新从数据库读入计划列表刷新
                         await publish_plan(session_id, plan_queue)
                         continue
@@ -172,17 +163,13 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                             await tool_executions_crud.finish_execution(db, pending.id, status, tm.content)
                             await db.commit()
 
-                    # 修改状态
-                    current = plan_queue.get_in_progress()
-                    if current is not None:
-                        if rejected:
-                            plan_queue.resolve_current(TodoStatus.FAILED)
-                            await todos_crud.update_todo_status(db, current.id, TodoStatus.FAILED)
-                            await db.commit()
-                            await publish_plan(session_id, plan_queue)
-                        elif skipped:
-                            plan_queue.resolve_current(TodoStatus.PENDING)
-                            await todos_crud.update_todo_status(db, current.id, TodoStatus.PENDING)
+                    if rejected or skipped:
+                        in_progress = plan_queue.get_in_progress_list()
+                        if len(in_progress) == 1:
+                            target = in_progress[0]
+                            new_status = TodoStatus.FAILED if rejected else TodoStatus.PENDING
+                            target.status = new_status
+                            await todos_crud.update_todo_status(db, target.id, new_status)
                             await db.commit()
                             await publish_plan(session_id, plan_queue)
                         
@@ -198,13 +185,4 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
         if not producer.done():
             producer.cancel()
             await asyncio.gather(producer, return_exceptions=True)
-
-    # 如果图已经运行结束了，关闭所有还在执行的步骤
-    if interrupt_info is None:
-        current = plan_queue.get_in_progress()
-        if current is not None:
-            plan_queue.resolve_current(TodoStatus.DONE)
-            await todos_crud.update_todo_status(db, current.id, TodoStatus.DONE)
-            await db.commit()
-            await publish_plan(session_id, plan_queue)
     return StreamResult(final_reply=final_reply, interrupt=interrupt_info)

@@ -21,6 +21,7 @@ SYSTEM_PROMPT = "你是一个AI智能助手, 可以使用工具完成用户的�
 PLANNER_PROMPT = (
     "你是一个任务规划器, 将用户的需求拆分成多个条例清晰、有先后顺序的todo计划。"
     "要求步骤之间不能有重叠, 设计的步骤数不宜过多, 也不可为了追求步骤少而放弃了清晰的条理。"
+    "如果用户的需求足够简单, 无需分步即可直接回答, 可以返回空的todos列表。"
 )
 
 # 需要审批的工具列表
@@ -61,16 +62,24 @@ async def planner_node(state: AgentState) -> AgentState:
 
 async def model_node(state: AgentState) -> AgentState:
     """大模型节点"""
-    # 将计划列表序列化为文字
-    plan_lines = [
-        f"{todo.position + 1}. {todo.title} [{todo.status}] (todo_id: {todo.id})"  # 给每条任务末尾附上todo_id
-        for todo in sorted(state.get("todos") or [], key=lambda x: x.position)  # 按顺序排列好任务
-    ]
-    plan_context = SystemMessage(
-        content="当前正在执行计划: \n" + "\n".join(plan_lines) + "\n严格按计划完成任务。\n完成一个计划后必须调用 mark_todo_done 工具。"
-    )
-
-    response = await _model_with_tools.ainvoke([plan_context] + state["messages"])
+    todos = sorted(state.get("todos") or [], key=lambda x: x.position)
+    messages = state["messages"]
+    # 仅当存在计划时才注入计划上下文
+    if todos:
+        plan_lines = [
+            f"{todo.position + 1}. {todo.title} [{todo.status}] (todo_id: {todo.id})"
+            for todo in todos
+        ]
+        plan_context = SystemMessage(
+            content=(
+                "当前正在执行计划: \n" + "\n".join(plan_lines) +
+                "\n严格按计划完成任务。"
+                "\n开始执行某个计划前必须调用 mark_todo_start 工具。"
+                "\n完成一个计划后必须调用 mark_todo_done 工具。"
+            )
+        )
+        messages = [plan_context] + state["messages"]
+    response = await _model_with_tools.ainvoke(messages)
     return {
         "messages": [response]
     }

@@ -7,7 +7,9 @@ from app.db.session import SessionLocal
 from app.schemas.enums import TodoStatus
 
 
-TODO_MARKER_TOOL = "mark_todo_done"
+TODO_DONE_TOOL = "mark_todo_done"
+TODO_START_TOOL = "mark_todo_start"
+TODO_MARKER_TOOLS = {TODO_START_TOOL, TODO_DONE_TOOL}
 
 @tool(parse_docstring=True)
 async def mark_todo_done(todo_id: str) -> str:
@@ -27,3 +29,22 @@ async def mark_todo_done(todo_id: str) -> str:
         await todos_crud.update_todo_status(db, todo_id, TodoStatus.DONE)  # 查询到了则标记为已完成
         await db.commit()
         return f"已标记完成的步骤: {todo.title}"
+
+@tool(parse_docstring=True)
+async def mark_todo_start(todo_id: str) -> str:
+    """
+    将一个计划todo步骤标记为执行中。在开始执行某个todo步骤前必须调用此工具。
+
+    Args:
+        todo_id: 计划todo的id, 取自计划列表中每个todo自带的id
+
+    Returns:
+        是否成功开始计划
+    """
+    async with SessionLocal() as db:
+        todo = await todos_crud.get_todo_by_id(db, todo_id)
+        if todo is None:
+            return f"未找到id为{todo_id}的计划。核对id后重试"
+        await todos_crud.update_todo_status(db, todo_id, TodoStatus.IN_PROGRESS)
+        await db.commit()
+        return f"已开始执行的步骤: {todo.title}"
