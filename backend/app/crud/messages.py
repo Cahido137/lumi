@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # 导入消息 ORM
 from app.db.models import Message
 from app.schemas.enums import MessageRole
+from app.crud import sessions as sessions_crud
 
 
 async def list_messages(db: AsyncSession, session_id: str, skip: int = 0, limit: int = 20):
@@ -28,6 +29,7 @@ async def add_message(db: AsyncSession, session_id: str, role: MessageRole | str
         role = role.value
     message = Message(session_id=session_id, role=role, content=content)  # 创建消息 ORM
     db.add(message)  # 向数据库添加消息
+    await sessions_crud.touch_session(db, session_id)
     await db.flush()
     return message
 
@@ -37,8 +39,11 @@ async def get_message_by_id(db: AsyncSession, message_id: str) -> Message | None
 
 async def update_message_content(db: AsyncSession, message_id: str, content: str) -> None:
     """更新消息内容"""
-    stmt = update(Message).where(Message.id == message_id).values(content=content)
-    await db.execute(stmt)
+    stmt = update(Message).where(Message.id == message_id).values(content=content).returning(Message.session_id)
+    result = await db.execute(stmt)
+    sid = result.scalar_one_or_none()
+    if sid is not None:
+        await sessions_crud.touch_session(db, sid)
     await db.flush()
 
 async def has_user_message_after(db: AsyncSession, session_id: str, created_at: datetime) -> bool:
@@ -61,4 +66,5 @@ async def delete_messages_after(db: AsyncSession, session_id: str, created_at: d
         .where(Message.session_id == session_id, Message.created_at > created_at)
     )
     await db.execute(stmt)
+    await sessions_crud.touch_session(db, session_id)
     await db.flush()
