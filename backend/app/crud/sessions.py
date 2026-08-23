@@ -17,7 +17,7 @@ async def create_session(db: AsyncSession, title: str, user_id: str) -> Session:
 async def list_sessions(db: AsyncSession, user_id: str,skip: int = 0, limit: int = 20) -> list[Session]:
     """按倒序返回会话列表"""
     # 按会话更新时间排序查询
-    stmt = select(Session).where(Session.user_id == user_id).order_by(Session.updated_at.desc()).offset(skip).limit(limit)
+    stmt = select(Session).where(Session.user_id == user_id).order_by(Session.updated_at.desc(), Session.id.desc()).offset(skip).limit(limit)
     result = await db.execute(stmt)
     return result.scalars().all()
 

@@ -13,13 +13,13 @@ from app.crud import sessions as sessions_crud
 
 async def list_messages(db: AsyncSession, session_id: str, skip: int = 0, limit: int = 20):
     """查询指定会话分页消息"""
-    stmt = select(Message).where(Message.session_id == session_id).order_by(Message.created_at.desc()).offset(skip).limit(limit)
+    stmt = select(Message).where(Message.session_id == session_id).order_by(Message.created_at.desc(), Message.id.desc()).offset(skip).limit(limit)
     result = await db.execute(stmt)
     return result.scalars().all()
 
 async def list_message_asc(db: AsyncSession, session_id: str):
     """查询指定会话所有消息, 正序排序"""
-    stmt = select(Message).where(Message.session_id == session_id).order_by(Message.created_at.asc())
+    stmt = select(Message).where(Message.session_id == session_id).order_by(Message.created_at.asc(), Message.id.asc())
     result = await db.execute(stmt)
     return result.scalars().all()
 

@@ -1,7 +1,7 @@
 from uuid import uuid4
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid, func, BigInteger, Identity
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid, func, BigInteger, Identity, text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -45,7 +45,7 @@ class Message(Base):
     session_id: Mapped[str] = mapped_column(ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID")
     role: Mapped[str] = mapped_column(String(20), comment="user=用户, assistant=模型, system=系统提示词, tool=工具消息")
     content: Mapped[str] = mapped_column(Text, default="", comment="消息正文")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), comment="消息产生时间")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("clock_timestamp()"), comment="消息产生时间")
 
 
 class Todo(Base):
