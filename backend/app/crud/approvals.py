@@ -5,10 +5,9 @@ from datetime import datetime
 from sqlalchemy import update, func, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.grants import Grants
+from app.core.grants import Grants, extract_grant_key
 from app.schemas.enums import ApprovalStatus, ApprovalScope
 from app.db.models import Approval, ToolExecution
-from app.utils.dict import normalize_dict
 
 
 async def create_approval(db: AsyncSession, session_id: str, thread_id: str, tool_execution_id: str) -> Approval:
@@ -60,7 +59,7 @@ async def get_session_grants(db: AsyncSession, session_id: str) -> Grants:
                 grants.tool.append(tool_name)  # 加入工具授权
         # 如果为指定命令授权
         else:
-            key = normalize_dict(tool_input)
+            key = extract_grant_key(tool_name, tool_input)
             commands = grants.command.setdefault(tool_name, [])
             if key not in commands:
                 commands.append(key)  # 加入命令授权
