@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 class RegisterRequest(BaseModel):
     """注册请求"""
     username: str = Field(..., min_length=1, max_length=20,
-                          pattern=r"^[a-zA-Z][a-zA-Z0-9_]{2, 19}$",
+                          pattern=r"^[a-zA-Z][a-zA-Z0-9_]{2,19}$",
                           description="用户名")
     password: str = Field(..., min_length=6, max_length=72, description="密码")
     nickname: str | None = Field(None, max_length=50, description="昵称")
