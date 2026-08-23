@@ -28,6 +28,17 @@ def get_cancel_event(session_id: str) -> asyncio.Event:
     return event
 
 
+# 会话取消代际
+_cancel_generations: dict[str, int] = {}  # {会话ID: 当前代际}
+def get_cancel_generation(session_id: str) -> int:
+    """获取会话当前的取消代际"""
+    return _cancel_generations.get(session_id, 0)
+
+def bump_cancel_generation(session_id: str) -> None:
+    """递增指定会话的代际"""
+    _cancel_generations[session_id] = get_cancel_generation(session_id) + 1
+
+
 _active_runs: set[str] = set()  # 正在运行的会话ID集合
 _active_tasks: dict[str, asyncio.Task] = {}  # {会话ID: 图流生产者任务}
 
@@ -38,6 +49,26 @@ def register_active_task(session_id: str, task: asyncio.Task) -> None:
 def unregister_active_task(session_id: str) -> None:
     """注销指定会话的图流生产者任务"""
     _active_tasks.pop(session_id, None)
+
+
+# 会话中未完成轮次计数
+_pending_runs: dict[str, int] = {}  # {会话ID: 未完成轮次数}
+
+def register_pending_run(session_id: str) -> None:
+    """登记一轮未完成的运行"""
+    _pending_runs[session_id] = _pending_runs.get(session_id, 0) + 1
+
+def unregister_pending_run(session_id: str) -> None:
+    """注销一轮运行"""
+    count = _pending_runs.get(session_id, 0)
+    if count <= 1:
+        _pending_runs.pop(session_id, None)
+    else:
+        _pending_runs[session_id] = count - 1
+
+def has_pending_runs(session_id: str) -> bool:
+    """是否存在排队中或执行中的轮次"""
+    return _pending_runs.get(session_id, 0) > 0
 
 
 # 中断哨兵
@@ -69,4 +100,6 @@ def request_cancel_session(session_id: str) -> bool:
         if task is not None and not task.done():
             task.cancel()  # 立即取消任务
     get_cancel_event(session_id).set()
-    return running
+    # 代际加一，作废还在排队的任务
+    bump_cancel_generation(session_id)
+    return running or has_pending_runs(session_id)
