@@ -27,8 +27,12 @@ class EventBus:
     async def publish(self, event: AgentEvent) -> None:
         """发布事件到该会话队列"""
         queue = self._queues.get(event.session_id)
-        if queue is not None:
-            await queue.put(event)
+        if queue is None:
+            return 
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            pass  # 如果队列满了，直接丢弃此事件
 
     def has_subscribers(self, session_id: str) -> bool:
         """检查当前会话是否还有消费者"""
