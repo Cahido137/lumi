@@ -9,12 +9,13 @@ from app.db.models import ToolExecution
 from app.schemas.enums import ExecutionStatus
 
 
-async def create_pending_execution(db: AsyncSession, session_id: str, tool_name: str, tool_input: dict) -> ToolExecution:
+async def create_pending_execution(db: AsyncSession, session_id: str, tool_name: str, tool_input: dict, tool_call_id: str | None = None) -> ToolExecution:
     """创建待审批状态的工具执行记录"""
     execution = ToolExecution(
         session_id=session_id,
         tool_name=tool_name,
         tool_input=tool_input,
+        tool_call_id=tool_call_id,
         status=ExecutionStatus.PENDING.value,
         needs_approval=True
     )
@@ -38,6 +39,21 @@ async def get_pending_execution(db: AsyncSession, session_id: str):
         .where(
             ToolExecution.session_id == session_id, 
             ToolExecution.status == ExecutionStatus.PENDING.value
+        ).order_by(ToolExecution.started_at.asc())
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+async def get_pending_execution_by_call_id(db: AsyncSession, session_id: str, tool_call_id: str | None) -> ToolExecution | None:
+    """按tool_call_id查询执行记录"""
+    if not tool_call_id:
+        return None
+    stmt = (
+        select(ToolExecution)
+        .where(
+            ToolExecution.session_id == session_id,
+            ToolExecution.status == ExecutionStatus.PENDING.value,
+            ToolExecution.tool_call_id == tool_call_id
         ).order_by(ToolExecution.started_at.asc())
     )
     result = await db.execute(stmt)

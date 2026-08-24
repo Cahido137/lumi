@@ -87,7 +87,7 @@ async def _run_agent_session_locked(session_id: str, content: str, *, user_messa
             # 如果有中断信息则创建审批相关信息并落库，并且发布审批事件到总线
             if stream_result.interrupt is not None:
                 execution = await tool_executions_crud.create_pending_execution(
-                    db, session_id, stream_result.interrupt.tool, stream_result.interrupt.tool_input
+                    db, session_id, stream_result.interrupt.tool, stream_result.interrupt.tool_input, stream_result.interrupt.tool_call_id
                 )
                 approval = await approvals_crud.create_approval(
                     db, session_id, run_context.thread_id, execution.id
@@ -236,7 +236,7 @@ async def resume_agent_session(approval_id: str, decision: ApprovalStatus, scope
                     # 再次检查是否还有中断
                     if stream_result.interrupt is not None:
                         execution = await tool_executions_crud.create_pending_execution(
-                            db, session_id, stream_result.interrupt.tool, stream_result.interrupt.tool_input
+                            db, session_id, stream_result.interrupt.tool, stream_result.interrupt.tool_input, stream_result.interrupt.tool_call_id
                         )
                         new_approval = await approvals_crud.create_approval(
                             db, session_id, thread_id, execution.id

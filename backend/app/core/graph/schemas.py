@@ -14,3 +14,4 @@ class ApprovalInterrupt(BaseModel):
     """审批中断体"""
     tool: str = Field(..., description="待审批工具名")
     tool_input: dict[str, Any] = Field(default_factory=dict, description="工具入参")
+    tool_call_id: str = Field(..., description="发起工具调用的tool_call_id")

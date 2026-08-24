@@ -128,7 +128,7 @@ async def approval_node(state: AgentState) -> AgentState:
     if tc is None:
         return {"pending_tool_call_id": None}
     decision = interrupt(
-        ApprovalInterrupt(tool=tc["name"], tool_input=tc["args"] or {}).model_dump()
+        ApprovalInterrupt(tool=tc["name"], tool_input=tc["args"] or {}, tool_call_id=tc["id"]).model_dump()
     )
     decision_value = decision if isinstance(decision, str) else decision.value
     return {

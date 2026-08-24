@@ -157,8 +157,16 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                     # 如果刚批准，落库执行结果
                     # 没有被跳过才执行落库
                     if not skipped:
-                        pending = await tool_executions_crud.get_pending_execution(db, session_id)
-                        if (pending is not None) and (pending.tool_name == tm.name):
+                        pending = await tool_executions_crud.get_pending_execution_by_call_id(db, session_id, tm.tool_call_id)
+                        if pending is None:
+                            pending = await tool_executions_crud.get_pending_execution(db, session_id)
+                        matched = False
+                        if pending is not None:
+                            if pending.tool_call_id is not None:
+                                matched = pending.tool_call_id == tm.tool_call_id
+                            else:
+                                matched = pending.tool_name == tm.name
+                        if matched:
                             status = ExecutionStatus.REJECTED if rejected else ExecutionStatus.SUCCESS
                             await tool_executions_crud.finish_execution(db, pending.id, status, tm.content)
                             await db.commit()

@@ -68,6 +68,7 @@ class ToolExecution(Base):
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="工具唯一标识ID")
     session_id: Mapped[str] = mapped_column(ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID")
     tool_name: Mapped[str] = mapped_column(String(100), comment="工具名称")
+    tool_call_id: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="发起该工具调用的tool_call_id")
     tool_input: Mapped[dict] = mapped_column(JSONB, default=dict, comment="工具入参")
     tool_output: Mapped[str | None] = mapped_column(Text, nullable=True, comment="工具输出")
     status: Mapped[str] = mapped_column(String(20), default="success", comment="success=成功, error=失败, pending=等待审批, rejected=已拒绝")
