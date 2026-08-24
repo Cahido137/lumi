@@ -141,8 +141,8 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                     final_reply = msg.content
 
             # 找到工具节点输出
-            if "tool_node" in payload:
-                for tm in payload["tool_node"]["messages"]:
+            if "exec_node" in payload:
+                for tm in payload["exec_node"]["messages"]:
                     # 如果是todo标记工具，同步计划状态后直接跳过
                     if tm.name in TODO_MARKER_TOOLS:
                         plan_queue = await load_plan_queue(db, session_id)  # 重新从数据库读入计划列表刷新

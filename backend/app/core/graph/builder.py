@@ -41,6 +41,15 @@ _model = get_chat_model()
 _model_with_tools = _model.bind_tools(tools=TOOLS)
 
 
+def _find_tool_call_message(state: AgentState):
+    """找到最近一条携带tool_call的AIMessage"""
+    # 倒序开始寻找
+    for msg in reversed(state.get("messages") or []):
+        if getattr(msg, "tool_calls", None):
+            return msg
+    return None
+
+
 async def planner_node(state: AgentState) -> AgentState:
     """计划器节点"""
     task = state["messages"][-1].content  # 拿到用户的消息
@@ -84,53 +93,107 @@ async def model_node(state: AgentState) -> AgentState:
         "messages": [response]
     }
 
-async def tool_node(state: AgentState) -> AgentState:
-    """工具执行节点"""
-    last_msg = state["messages"][-1]  # 获取最后一条消息
-    tool_msgs = []
-    grants = Grants.model_validate(state.get("grants") or {})
-    requested = False  # 记录本次节点是否已经发生过中断
-    # 遍历工具调用请求
-    for tc in last_msg.tool_calls:
-        # 是需要审批的工具并且没有已经记录的审批授权
-        if tc["name"] in APPROVAL_REQUIRED_TOOLS and not grants.is_granted(tc["name"], tc["args"] or {}):
-            # 如果已经发生过中断了，应避免此节点中多次中断引发异常
-            if requested:
-                # 向模型发送消息，让模型下一次消息单独调用工具
-                tool_msgs.append(ToolMessage(
-                    name=tc["name"],
-                    content=f"{SKIPPED_PREFIX} 一次只允许提交一个审批请求, 请在下次消息单独调用此工具",
-                    tool_call_id=tc["id"]
-                ))
-                continue
-            requested = True
-            # 工具需要审批，此处中断
-            decision = interrupt(
-                ApprovalInterrupt(tool=tc["name"], tool_input=tc["args"] or {}).model_dump()  # 转化为dict传入
-            )
-            # 拒绝执行情况
-            if decision == ApprovalStatus.REJECTED:
-                tool_msgs.append(ToolMessage(
-                    name=tc["name"],
-                    content=f"{REJECTED_PREFIX} 用户拒绝此操作",
-                    tool_call_id=tc["id"]
-                ))
-                continue
-        # 批准或直接通过，手动调用工具
-        result = await TOOLS_BY_NAME[tc["name"]].ainvoke(tc["args"])
-        tool_msgs.append(ToolMessage(
-            name=tc["name"],
-            content=result,
-            tool_call_id=tc["id"]
-        ))
-    return {"messages": tool_msgs}
+async def precheck_node(state: AgentState) -> AgentState:
+    """预审批节点, 负责标记下一条需要人工审批的工具调用"""
+    msg = _find_tool_call_message(state)  # 先看有没有带有tool_call_id的消息
+    if msg is None:
+        return {}
+    grants: Grants = Grants.model_validate(state.get("grants") or {})
+    decisions = dict(state.get("tool_decisions") or {})
+    for tc in msg.tool_calls:
+        tc_id = tc["id"]
+        tc_name = tc["name"]
+        tc_input = tc["args"]
+        # 无需审批的工具直接跳过
+        if tc_name not in APPROVAL_REQUIRED_TOOLS:
+            continue
+        # 已经做过审批的工具直接跳过
+        if tc_id in decisions:
+            continue
+        # 已经授权的直接跳过
+        if grants.is_granted(tc_name, tc_input or {}):
+            continue
+        return {"pending_tool_call_id": tc_id}
+    return {"pending_tool_call_id": None}
 
-def router(state: AgentState) -> Literal["tool_node", END]:
-    """路由函数"""
+async def approval_node(state: AgentState) -> AgentState:
+    """审批节点, 负责为指定pending_tool_call_id的工具发起或者恢复审批中断"""
+    pending = state.get("pending_tool_call_id")
+    if not pending:
+        return {}
+    msg = _find_tool_call_message(state)
+    tc = next(
+        (t for t in msg.tool_calls if t["id"] == pending), None
+    )
+    if tc is None:
+        return {"pending_tool_call_id": None}
+    decision = interrupt(
+        ApprovalInterrupt(tool=tc["name"], tool_input=tc["args"] or {}).model_dump()
+    )
+    decision_value = decision if isinstance(decision, str) else decision.value
+    return {
+        "tool_decisions": {pending: decision_value},
+        "pending_tool_call_id": None
+    }
+
+async def exec_node(state: AgentState) -> AgentState:
+    """工具执行节点"""
+    msg = _find_tool_call_message(state)
+    if msg is None:
+        return {}
+    grants = Grants.model_validate(state.get("grants") or {})
+    decisions = dict(state.get("tool_decisions") or {})
+    executed = list(state.get("executed_tool_call_ids") or [])
+    tool_msgs = []
+    new_executed = []
+    for tc in msg.tool_calls:
+        tc_id = tc["id"]
+        tc_name = tc["name"]
+        tc_input = tc["args"]
+        # 如果已经执行过了直接跳过
+        if tc_id in executed:
+            continue
+        decision = decisions.get(tc_id)  # 拿到这一个工具调用的审批决定
+        # 如果需要审批但还没有审批
+        if tc_name in APPROVAL_REQUIRED_TOOLS and decision is None and not grants.is_granted(tc_name, tc_input or {}):
+            continue
+        # 如果已经被拒绝
+        if decision == ApprovalStatus.REJECTED.value:
+            tool_msgs.append(ToolMessage(
+                name=tc_name,
+                content=f"{REJECTED_PREFIX} 用户拒绝此操作",
+                tool_call_id=tc_id
+            ))
+            new_executed.append(tc_id)
+            continue
+        # 已授权或者无需授权的工具
+        result = await TOOLS_BY_NAME[tc_name].ainvoke(tc_input)
+        tool_msgs.append(ToolMessage(
+            name=tc_name,
+            content=result,
+            tool_call_id=tc_id
+        ))
+        new_executed.append(tc_id)
+    return {
+        "messages": tool_msgs,
+        "executed_tool_call_ids": new_executed
+    }
+
+def router_after_model(state: AgentState) -> Literal["precheck_node", END]:
+    """模型输出后路由"""
     last_msg = state["messages"][-1]
     if last_msg.tool_calls:
-        return "tool_node"
+        return "precheck_node"
     return END
+
+def router_after_exec(state: AgentState) -> Literal["precheck_node", "model_node"]:
+    """执行节点后路由"""
+    msg = _find_tool_call_message(state)
+    executed = state.get("executed_tool_call_ids") or []
+    # 如果工具调用消息不为空并且所有的tool_call都执行完毕了
+    if msg is not None and all(tc["id"] in executed for tc in msg.tool_calls):
+        return "model_node"
+    return "precheck_node"
 
 
 def build_agent_graph(checkpointer=None):
@@ -142,9 +205,13 @@ def build_agent_graph(checkpointer=None):
     )
     builder.add_node("planner_node", planner_node)
     builder.add_node("model_node", model_node)
-    builder.add_node("tool_node", tool_node)
+    builder.add_node("precheck_node", precheck_node)
+    builder.add_node("approval_node", approval_node)
+    builder.add_node("exec_node", exec_node)
     builder.add_edge(START, "planner_node")
     builder.add_edge("planner_node", "model_node")
-    builder.add_conditional_edges("model_node", router, path_map=["tool_node", END])
-    builder.add_edge("tool_node", "model_node")
+    builder.add_conditional_edges("model_node", router_after_model, path_map=["precheck_node", END])
+    builder.add_edge("precheck_node", "approval_node")
+    builder.add_edge("approval_node", "exec_node")
+    builder.add_conditional_edges("exec_node", router_after_exec, path_map=["precheck_node", "model_node"])
     return builder.compile(checkpointer=checkpointer)

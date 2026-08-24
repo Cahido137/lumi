@@ -16,11 +16,24 @@ def todo_list_reducer(existing: list[TodoItem] | None, updates: list[TodoItem]) 
         merged[t.id] = t  # 追加新的todos
     return list(merged.values())
 
+def merge_dict_reducer(existing: dict[str, str] | None, updates: dict[str, str]) -> dict[str, str]:
+    """字典合并策略函数"""
+    merged = dict(existing or {})
+    merged.update(updates or {})
+    return merged
+
+def concat_list_reducer(existing: list[str] | None, updates: list[str]) -> list[str]:
+    """列表合并策略函数"""
+    return (existing or []) + (updates or [])
+
 class AgentState(TypedDict):
     """图全局状态"""
     messages: Annotated[list[BaseMessage], add_messages]
     todos: Annotated[list[TodoItem], todo_list_reducer]
     grants: dict  # 工具授权快照  格式要求: {"tool": [], "command": {}}
+    tool_decisions: Annotated[dict[str, str], merge_dict_reducer]  # 每个工具调用的审批决定
+    executed_tool_call_ids: Annotated[list[str], concat_list_reducer]  # 以及执行过的工具产生的tool_call_id
+    pending_tool_call_id: NotRequired[str | None]  # 正在等待审批的工具call_id
 
 
 class InputState(TypedDict):
