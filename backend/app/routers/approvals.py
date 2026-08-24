@@ -10,6 +10,7 @@ from app.core.deps import get_current_user, get_owned_approval_or_404
 from app.db.session import get_db
 from app.db.models import User
 from app.schemas.approvals import ApprovalDecisionRequest
+from app.schemas.enums import ApprovalStatus
 from app.utils.response import success_response
 
 
@@ -25,7 +26,7 @@ async def decide_approval(
     """处理审批决定"""
     await get_owned_approval_or_404(db, str(approval_id), current_user)
     try:
-        reply = await resume_agent_session(str(approval_id), request.status, request.scope)
+        reply = await resume_agent_session(str(approval_id), ApprovalStatus(request.status), request.scope)
     except RunCancelledError as e:
         return success_response(message=e.message, data=None)
     except ValueError as e:

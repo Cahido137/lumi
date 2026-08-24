@@ -158,7 +158,7 @@ async def exec_node(state: AgentState) -> AgentState:
         if tc_name in APPROVAL_REQUIRED_TOOLS and decision is None and not grants.is_granted(tc_name, tc_input or {}):
             continue
         # 如果已经被拒绝
-        if decision == ApprovalStatus.REJECTED.value:
+        if decision is not None and decision != ApprovalStatus.APPROVED.value:
             tool_msgs.append(ToolMessage(
                 name=tc_name,
                 content=f"{REJECTED_PREFIX} 用户拒绝此操作",
