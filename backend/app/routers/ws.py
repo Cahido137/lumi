@@ -7,7 +7,7 @@ import jwt as pyjwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketException
 
 from app.core.event_bus import event_bus
-from app.core.session_runner import run_agent_session
+from app.core.session_runner import run_agent_session, request_cancel_session
 from app.crud import sessions as sessions_crud
 from app.crud import users as users_crud
 from app.db.session import SessionLocal
@@ -78,8 +78,7 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
     except Exception:
         raise WebSocketException(code=1011, reason="服务器内部错误")
     finally:
-        # 断开连接后取消所有运行中的任务释放资源
-        for task in tasks:
-            task.cancel()
+        request_cancel_session(sid)
+        send_task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         event_bus.unsubscribe(sid)
