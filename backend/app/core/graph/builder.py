@@ -165,6 +165,17 @@ async def exec_node(state: AgentState) -> AgentState:
             ))
             new_executed.append(tc_id)
             continue
+        if tc_name in TODO_MARKER_TOOLS and tc_input:
+            todo_id = tc_input.get("todo_id")
+            if todo_id not in {t.id for t in (state.get("todos") or [])}:
+                tool_msgs.append(ToolMessage(
+                    name=tc_name,
+                    content=f"未找到id为{todo_id}的计划。核对ID后重试",
+                    tool_call_id=tc_id,
+                    status="success"
+                ))
+                new_executed.append(tc_id)
+                continue
         # 已授权或者无需授权的工具
         try:
             result = await TOOLS_BY_NAME[tc_name].ainvoke(tc_input)
