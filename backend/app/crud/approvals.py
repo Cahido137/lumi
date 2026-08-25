@@ -28,6 +28,12 @@ async def get_approval_by_id(db: AsyncSession, approval_id: str) -> Approval | N
     """按审批单ID查询审批单"""
     return await db.get(Approval, approval_id)
 
+async def get_approval_by_execution_id(db: AsyncSession, tool_execution_id: str) -> Approval | None:
+    """按工具执行记录ID查询审批单"""
+    stmt = select(Approval).where(Approval.tool_execution_id == tool_execution_id)
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
 async def update_approval(db: AsyncSession, approval_id: str, status: ApprovalStatus, scope: ApprovalScope) -> None:
     """更新审批单"""
     if isinstance(status, ApprovalStatus):

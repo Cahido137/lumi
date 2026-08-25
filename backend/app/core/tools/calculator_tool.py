@@ -40,10 +40,12 @@ def calculator(expression: str) -> str:
         expression: 数学表达式字符串
 
     Returns:
-        计算结果或错误原因
+        计算结果
     """
+    # M1 大改: 失败通过异常传播, 由执行层统一转为 status="error" 的工具消息,
+    # 不再返回错误字符串
     try:
         result = _safe_eval(ast.parse(expression, mode="eval"))
         return str(result)
     except Exception as e:
-        return f"计算失败: {e}"
+        raise ValueError(f"计算失败: {e}") from e

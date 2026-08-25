@@ -233,9 +233,17 @@ def run_shell(command: str, timeout: int = DEFAULT_TIMEOUT) -> str:
             parts.append(f"标准错误:\n{_truncate(err)}")
         if not out.strip() and not err.strip():
             parts.append("(无输出)")
-        return "\n\n".join(parts)
+        text = "\n\n".join(parts)
+        # M1 大改: 超时视为工具失败, 抛异常(由执行层统一转为 status="error" 的
+        # 工具消息), 并把已捕获的部分输出带进错误消息供模型参考
+        if timed_out:
+            raise TimeoutError(text)
+        return text
+    except TimeoutError:
+        raise
     except Exception as e:
-        return f"执行失败: {e}"
+        # M1 大改: 启动/IO 失败通过异常传播, 不再返回错误字符串
+        raise RuntimeError(f"执行失败: {e}") from e
     finally:
         for f in opened:
             try:

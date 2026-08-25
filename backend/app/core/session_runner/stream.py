@@ -11,7 +11,7 @@ from app.core.event_response import (
     ToolStartedResponse,
     ToolFinishedResponse
 )
-from app.core.graph.builder import REJECTED_PREFIX, SKIPPED_PREFIX, build_agent_graph
+from app.core.graph.builder import build_agent_graph
 from app.core.graph.schemas import ApprovalInterrupt
 from app.core.plan_queue import PlanQueue
 from app.core.session_runner.context import StreamResult
@@ -25,7 +25,8 @@ from app.core.session_runner.state import (
 from app.core.tools.todo_tool import TODO_MARKER_TOOLS
 from app.crud import todos as todos_crud
 from app.crud import tool_executions as tool_executions_crud
-from app.schemas.enums import EventType, TodoStatus, ExecutionStatus
+from app.crud import approvals as approvals_crud
+from app.schemas.enums import EventType, TodoStatus, ExecutionStatus, ApprovalStatus
 from app.schemas.todos import TodoItem
 
 
@@ -58,6 +59,14 @@ def _on_producer_done(chunks: asyncio.Queue, task: asyncio.Task) -> None:
     exc = task.exception()  # 捕获取消任务的异常
     if exc is not None:
         chunks.put_nowait(exc)
+
+def _resolve_execution_status(rejected: bool, msg_status: str | None) -> ExecutionStatus:
+    """由审批单状态和工具消息状态决定执行记录状态"""
+    if rejected:
+        return ExecutionStatus.REJECTED
+    if msg_status == "error":
+        return ExecutionStatus.ERROR
+    return ExecutionStatus.SUCCESS
 
 async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input, config, cancel_event: asyncio.Event | None = None) -> StreamResult:
     """图运行与事件处理流"""
@@ -151,33 +160,31 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
 
                     # 先提取出消息块，并确保是字符串
                     content = tm.content if isinstance(tm.content, str) else str(tm.content)
-                    rejected = content.startswith(REJECTED_PREFIX)  # 判断审批是否被拒绝
-                    skipped = content.startswith(SKIPPED_PREFIX)  # 判断此工具消息是否因为触发了多重中断而被跳过
 
-                    # 如果刚批准，落库执行结果
-                    # 没有被跳过才执行落库
-                    if not skipped:
-                        pending = await tool_executions_crud.get_pending_execution_by_call_id(db, session_id, tm.tool_call_id)
-                        if pending is None:
-                            pending = await tool_executions_crud.get_pending_execution(db, session_id)
-                        matched = False
-                        if pending is not None:
-                            if pending.tool_call_id is not None:
-                                matched = pending.tool_call_id == tm.tool_call_id
-                            else:
-                                matched = pending.tool_name == tm.name
-                        if matched:
-                            status = ExecutionStatus.REJECTED if rejected else ExecutionStatus.SUCCESS
-                            await tool_executions_crud.finish_execution(db, pending.id, status, tm.content)
-                            await db.commit()
+                    pending = await tool_executions_crud.get_pending_execution_by_call_id(db, session_id, tm.tool_call_id)
+                    if pending is None:
+                        pending = await tool_executions_crud.get_pending_execution(db, session_id)
+                    matched = False
+                    if pending is not None:
+                        if pending.tool_call_id is not None:
+                            matched = pending.tool_call_id == tm.tool_call_id
+                        else:
+                            matched = pending.tool_name == tm.name
 
-                    if rejected or skipped:
+                    rejected = False
+                    if matched:
+                        approval = await approvals_crud.get_approval_by_execution_id(db, pending.id)
+                        rejected = approval is not None and approval.status == ApprovalStatus.REJECTED.value
+                        status = _resolve_execution_status(rejected, getattr(tm, "status", None))
+                        await tool_executions_crud.finish_execution(db, pending.id, status, tm.content)
+                        await db.commit()
+
+                    # 审批被拒时把当前执行中的计划步骤回退为失败
+                    if rejected:
                         in_progress = plan_queue.get_in_progress_list()
                         if len(in_progress) == 1:
                             target = in_progress[0]
-                            new_status = TodoStatus.FAILED if rejected else TodoStatus.PENDING
-                            target.status = new_status
-                            await todos_crud.update_todo_status(db, target.id, new_status)
+                            await todos_crud.update_todo_status(db, target.id, TodoStatus.FAILED)
                             await db.commit()
                             await publish_plan(session_id, plan_queue)
                         

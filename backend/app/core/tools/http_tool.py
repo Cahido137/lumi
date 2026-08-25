@@ -20,7 +20,9 @@ async def http_get(url: str) -> str:
     """
     # 仅允许 http 和 https 协议
     if not url.startswith(("http://", "https://")):
-        return "拦截。仅允许使用http和https协议"
+        raise ValueError("仅允许使用http和https协议")
+    # M1 大改: 请求失败通过异常传播(由执行层统一转为 status="error" 的工具消息),
+    # 不再返回错误字符串
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
             res = await client.get(url)
@@ -29,4 +31,4 @@ async def http_get(url: str) -> str:
                 body = f"已截取前{BODY_MAX_LEN}字符: {body[:BODY_MAX_LEN]}"
             return f"响应: \n状态码: {res.status_code} \n响应体: {body}"
     except Exception as e:
-        return f"请求失败: {e}"
+        raise RuntimeError(f"请求失败: {e}") from e

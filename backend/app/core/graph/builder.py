@@ -30,10 +30,6 @@ APPROVAL_REQUIRED_TOOLS = ["run_shell", "write_file"]
 # 构建工具名称映射字典列表
 TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
 
-# 审批消息前缀
-REJECTED_PREFIX = "[REJECTED]"
-SKIPPED_PREFIX = "[SKIPPED]"
-
 
 # 获得模型
 _model = get_chat_model()
@@ -161,18 +157,29 @@ async def exec_node(state: AgentState) -> AgentState:
         if decision is not None and decision != ApprovalStatus.APPROVED.value:
             tool_msgs.append(ToolMessage(
                 name=tc_name,
-                content=f"{REJECTED_PREFIX} 用户拒绝此操作",
-                tool_call_id=tc_id
+                content="用户拒绝此操作",
+                tool_call_id=tc_id,
+                status="error"
             ))
             new_executed.append(tc_id)
             continue
         # 已授权或者无需授权的工具
-        result = await TOOLS_BY_NAME[tc_name].ainvoke(tc_input)
-        tool_msgs.append(ToolMessage(
-            name=tc_name,
-            content=result,
-            tool_call_id=tc_id
-        ))
+        try:
+            result = await TOOLS_BY_NAME[tc_name].ainvoke(tc_input)
+        except Exception as e:
+            tool_msgs.append(ToolMessage(
+                name=tc_name,
+                content=f"工具执行失败: {e}",
+                tool_call_id=tc_id,
+                status="error"
+            ))
+        else:
+            tool_msgs.append(ToolMessage(
+                name=tc_name,
+                content=result,
+                tool_call_id=tc_id,
+                status="success"
+            ))
         new_executed.append(tc_id)
     return {
         "messages": tool_msgs,

@@ -125,4 +125,6 @@ def web_search(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> str:
             text = f"已截取前{RESULTS_MAX_LEN}字符: {text[:RESULTS_MAX_LEN]}"
         return text
     except Exception as e:
-        return f"搜索失败: {e}"
+        # M1 大改: 搜索整体失败通过异常传播(由执行层统一转为 status="error" 的
+        # 工具消息); 注意"未找到结果"仍算成功执行, 走上面的正常返回
+        raise RuntimeError(f"搜索失败: {e}") from e
