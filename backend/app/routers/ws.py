@@ -81,4 +81,4 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
         request_cancel_session(sid)
         send_task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        event_bus.unsubscribe(sid)
+        event_bus.unsubscribe(sid, queue)
