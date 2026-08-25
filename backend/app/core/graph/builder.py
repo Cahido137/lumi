@@ -8,6 +8,7 @@ from langgraph.types import interrupt
 from app.core.graph.state import AgentState, InputState, OutputState
 from app.core.llm import get_chat_model, create_planner_llm
 from app.core.tools import TOOLS
+from app.core.tools.todo_tool import TODO_MARKER_TOOLS, TODO_START_TOOL, TODO_DONE_TOOL
 from app.core.graph.schemas import PlanOutput, ApprovalInterrupt
 from app.core.grants import Grants
 from app.schemas.todos import TodoItem
@@ -72,7 +73,7 @@ async def model_node(state: AgentState) -> AgentState:
     # 仅当存在计划时才注入计划上下文
     if todos:
         plan_lines = [
-            f"{todo.position + 1}. {todo.title} [{todo.status}] (todo_id: {todo.id})"
+            f"{todo.position + 1}. {todo.title} [{getattr(todo.status, 'value', todo.status)}] (todo_id: {todo.id})"
             for todo in todos
         ]
         plan_context = SystemMessage(
@@ -142,6 +143,7 @@ async def exec_node(state: AgentState) -> AgentState:
     executed = list(state.get("executed_tool_call_ids") or [])
     tool_msgs = []
     new_executed = []
+    todos_update = None  # 标记工具执行成功后同步的 todos 状态
     for tc in msg.tool_calls:
         tc_id = tc["id"]
         tc_name = tc["name"]
@@ -180,11 +182,24 @@ async def exec_node(state: AgentState) -> AgentState:
                 tool_call_id=tc_id,
                 status="success"
             ))
+
+            # 标记工具执行后也回写图状态
+            if tc_name in TODO_MARKER_TOOLS and tc_input:
+                new_status = TodoStatus.DONE if tc_name == TODO_DONE_TOOL else TodoStatus.IN_PROGRESS
+                todo_id = tc_input.get("todo_id")
+                base = todos_update if todos_update is not None else list(state.get("todos") or [])
+                todos_update = [
+                    t.model_copy(update={"status": new_status}) if t.id == todo_id else t
+                    for t in base
+                ]
         new_executed.append(tc_id)
-    return {
+    node_result = {
         "messages": tool_msgs,
         "executed_tool_call_ids": new_executed
     }
+    if todos_update is not None:
+        node_result["todos"] = todos_update
+    return node_result
 
 def router_after_model(state: AgentState) -> Literal["precheck_node", END]:
     """模型输出后路由"""
