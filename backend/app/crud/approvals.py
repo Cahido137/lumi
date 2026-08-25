@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import update, func, select, delete
+from sqlalchemy import update, func, select, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.grants import Grants, extract_grant_key
@@ -40,7 +40,7 @@ async def update_approval(db: AsyncSession, approval_id: str, status: ApprovalSt
         status = status.value
     if isinstance(scope, ApprovalScope):
         scope = scope.value
-    stmt = update(Approval).where(Approval.id == approval_id).values(status=status, scope=scope, decided_at=func.now())
+    stmt = update(Approval).where(Approval.id == approval_id).values(status=status, scope=scope, decided_at=text("clock_timestamp()"))
     await db.execute(stmt)
     await db.flush()
 

@@ -1,6 +1,6 @@
 """会话的 CRUD 操作"""
 
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # 导入会话 ORM
@@ -35,6 +35,6 @@ async def get_session_for_user(db: AsyncSession, session_id: str, user_id: str) 
 
 async def touch_session(db: AsyncSession, session_id: str) -> None:
     """刷新会话更新时间"""
-    stmt = update(Session).where(Session.id == session_id).values(updated_at=func.now())
+    stmt = update(Session).where(Session.id == session_id).values(updated_at=text("clock_timestamp()"))
     await db.execute(stmt)
     await db.flush()

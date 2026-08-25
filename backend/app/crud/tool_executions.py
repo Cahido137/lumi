@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import update, func, select, delete
+from sqlalchemy import update, func, select, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ToolExecution
@@ -28,7 +28,7 @@ async def finish_execution(db: AsyncSession, execution_id: str, status: Executio
     """执行完成更新状态"""
     if isinstance(status, ExecutionStatus):
         status = status.value
-    stmt = update(ToolExecution).where(ToolExecution.id == execution_id).values(status=status, tool_output=output, finished_at=func.now())
+    stmt = update(ToolExecution).where(ToolExecution.id == execution_id).values(status=status, tool_output=output, finished_at=text("clock_timestamp()"))
     await db.execute(stmt)
     await db.flush()
 
