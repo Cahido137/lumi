@@ -50,12 +50,28 @@ def _find_tool_call_message(state: AgentState):
 async def planner_node(state: AgentState) -> AgentState:
     """计划器节点"""
     task = state["messages"][-1].content  # 拿到用户的消息
+    existing_todos = sorted(state.get("todos") or [], key=lambda x: x.position)
+    prompt_messages = [SystemMessage(content=PLANNER_PROMPT)]
+    if existing_todos:
+        existing_lines = [f"{i + 1}. {t.title}" for i, t in enumerate(existing_todos)]
+        prompt_messages.append(HumanMessage(
+            content=(
+                "当前已有计划: \n" + "\n".join(existing_lines) + 
+                "\n如果用户的新消息是对该计划的延续(如要求继续等), 返回空的列表以沿用旧计划列表。"
+                "\n如果是全新的任务, 请给出新的计划列表。当然如果任务过于简单不需要设置计划, 也可以返回空列表。"
+            )
+        ))
+    prompt_messages.append(HumanMessage(content=task))
     # 让模型以结构化方式输出todos
     planner_llm = create_planner_llm().with_structured_output(
         PlanOutput,
         method="function_calling"
     )
-    plans = await planner_llm.ainvoke([SystemMessage(content=PLANNER_PROMPT), HumanMessage(content=task)])
+    plans = await planner_llm.ainvoke(prompt_messages)
+
+    # 如果有旧计划没有完成并且返回了空列表则沿用旧计划
+    if not plans.todos and existing_todos:
+        return {}
 
     # 构建 todos 列表
     todos = [
@@ -79,7 +95,8 @@ async def model_node(state: AgentState) -> AgentState:
         plan_context = SystemMessage(
             content=(
                 "当前正在执行计划: \n" + "\n".join(plan_lines) +
-                "\n严格按计划完成任务。"
+                "\n如果用户当前的问题与计划相关, 严格按计划完成任务。"
+                "\n如果用户提问的问题是与计划无关的问题, 则直接回答问题, 不需要执行以下规定的 mark 工作。"
                 "\n开始执行某个计划前必须调用 mark_todo_start 工具。"
                 "\n完成一个计划后必须调用 mark_todo_done 工具。"
                 "\n在给出最终回复之前, 必须确保所有已开始的计划步骤都已调用 mark_todo_done 工具。"

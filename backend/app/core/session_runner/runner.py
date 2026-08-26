@@ -31,6 +31,8 @@ from app.core.session_runner.stream import process_stream
 from app.crud import approvals as approvals_crud
 from app.crud import messages as messages_crud
 from app.crud import tool_executions as tool_executions_crud
+from app.crud import sessions as sessions_crud
+from app.crud import todos as todos_crud
 from app.db.models import Message
 from app.db.session import SessionLocal
 from app.schemas.enums import (
@@ -39,6 +41,7 @@ from app.schemas.enums import (
     EventType,
     MessageRole,
 )
+from app.schemas.todos import TodoStatus, TodoItem
 
 
 async def _run_agent_session_locked(session_id: str, content: str, *, user_message_id: str | None = None) -> Message | None:
@@ -77,9 +80,17 @@ async def _run_agent_session_locked(session_id: str, content: str, *, user_messa
 
             run_context = build_config(session_id)  # 创建配置
             grants = await approvals_crud.get_session_grants(db, session_id)  # 获取当前会话工具授权
+            graph_input = {"messages": messages, "grants": grants.model_dump()}
+            # 如果存在因被打断而未完成的任务，则注入先前的完整计划
+            if await sessions_crud.get_has_pending_task(db, session_id):
+                rows = await todos_crud.list_todos(db, session_id)
+                graph_input["todos"] = [
+                    TodoItem(id=row.id, title=row.title, status=TodoStatus(row.status), position=row.position)
+                    for row in rows
+                ]
             stream_result: StreamResult = await process_stream(
                 db=db, session_id=session_id, plan_queue=PlanQueue(),
-                graph_input={"messages": messages, "grants": grants.model_dump()},
+                graph_input=graph_input,
                 config=run_context.config,
                 cancel_event=cancel_event
             )
@@ -125,6 +136,7 @@ async def _run_agent_session_locked(session_id: str, content: str, *, user_messa
                 partial = await messages_crud.add_message(db, session_id, MessageRole.ASSISTANT, e.streamed_text)
                 partial_id = partial.id  # 记录下新消息的ID
             await messages_crud.add_message(db, session_id, MessageRole.SYSTEM, CANCEL_MESSAGE)  # 将打断的消息作为系统消息插入
+            await sessions_crud.set_has_pending_task(db, session_id, True)  # 任务被打断标记
             await db.commit()
         # 发布打断事件
         await event_bus.publish(AgentEvent(
@@ -272,6 +284,7 @@ async def resume_agent_session(approval_id: str, decision: ApprovalStatus, scope
                         partial = await messages_crud.add_message(db, session_id, MessageRole.ASSISTANT, e.streamed_text)
                         partial_id = partial.id  # 记录下新消息的ID
                     await messages_crud.add_message(db, session_id, MessageRole.SYSTEM, CANCEL_MESSAGE)  # 将打断的消息作为系统消息插入
+                    await sessions_crud.set_has_pending_task(db, session_id, True)  # 设置任务被打断标记
                     await db.commit()
                 # 发布打断事件
                 await event_bus.publish(AgentEvent(

@@ -40,6 +40,7 @@ class InputState(TypedDict):
     """输入状态"""
     messages: list[BaseMessage]
     grants: NotRequired[dict]
+    todos: NotRequired[list]  # 被打断任务的旧计划注入
 
 
 class OutputState(TypedDict):

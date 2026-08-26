@@ -26,6 +26,7 @@ from app.core.tools.todo_tool import TODO_MARKER_TOOLS
 from app.crud import todos as todos_crud
 from app.crud import tool_executions as tool_executions_crud
 from app.crud import approvals as approvals_crud
+from app.crud import sessions as sessions_crud
 from app.schemas.enums import EventType, TodoStatus, ExecutionStatus, ApprovalStatus
 from app.schemas.todos import TodoItem
 
@@ -83,6 +84,7 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
     producer.add_done_callback(partial(_on_producer_done, chunks))  # 为生产者绑定回调函数
 
     try:
+        executed_any = False  # 记录本轮是否执行过任何工具
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 raise RunCancelledError(streamed_text="".join(streamed_parts))
@@ -120,12 +122,18 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
 
             # 找到计划器节点输出
             if "planner_node" in payload:
+                planner_output = payload.get("planner_node") or {}
+                # 如果规划期返回空，则跳过替换
+                if "todos" not in planner_output:
+                    continue
                 items = [
                     TodoItem.model_validate(t)
                     for t in payload["planner_node"]["todos"]
                 ]
                 plan_queue.items = sorted(items, key=lambda t: t.position)
                 await todos_crud.replace_todos(db, session_id, plan_queue.to_list())
+                await db.commit()
+                await sessions_crud.set_has_pending_task(db, session_id, False)  # 作废旧计划，清除标记
                 await db.commit()
                 await publish_plan(session_id, plan_queue)
                     
@@ -151,6 +159,7 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
 
             # 找到工具节点输出
             if "exec_node" in payload:
+                executed_any = True
                 for tm in payload["exec_node"]["messages"]:
                     # 如果是todo标记工具，同步计划状态后直接跳过
                     if tm.name in TODO_MARKER_TOOLS:
@@ -202,7 +211,7 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
             await asyncio.gather(producer, return_exceptions=True)
 
     # 如果图是正常结束的，将所有正在执行的任务结束
-    if interrupt_info is None:
+    if interrupt_info is None and executed_any:
         rows = await todos_crud.list_todos(db, session_id)  # 列出所有任务
         finished_any = False
         for row in rows:
@@ -213,4 +222,9 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
             await db.commit()
             plan_queue = await load_plan_queue(db, session_id)  # 重新加载列表以发布最新计划
             await publish_plan(session_id, plan_queue)
+        # 检查是否有还未完成的任务
+        remaining = [row for row in await todos_crud.list_todos(db, session_id) if row.status != TodoStatus.DONE.value]
+        if not remaining:
+            await sessions_crud.set_has_pending_task(db, session_id, False)
+            await db.commit()
     return StreamResult(final_reply=final_reply, interrupt=interrupt_info)

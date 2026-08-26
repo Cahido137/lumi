@@ -33,6 +33,7 @@ class Session(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey(User.id, ondelete="CASCADE"), index=True, comment="会话所属用户ID")
     title: Mapped[str] = mapped_column(String(200), default="新会话", comment="会话标题")
     status: Mapped[str] = mapped_column(String(20), default="active", comment="active=进行中, archived=已归档")
+    has_pending_task: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否存在被打断未完成的任务")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="更新时间")
 

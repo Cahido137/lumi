@@ -38,3 +38,15 @@ async def touch_session(db: AsyncSession, session_id: str) -> None:
     stmt = update(Session).where(Session.id == session_id).values(updated_at=text("clock_timestamp()"))
     await db.execute(stmt)
     await db.flush()
+
+async def set_has_pending_task(db: AsyncSession, session_id: str, value: bool) -> None:
+    """设置会话是否存在被打断而未完成的任务"""
+    stmt = update(Session).where(Session.id == session_id).values(has_pending_task=value)
+    await db.execute(stmt)
+    await db.flush()
+
+async def get_has_pending_task(db: AsyncSession, session_id: str) -> bool:
+    """查询会话是否存在被打断而未完成的任务"""
+    stmt = select(Session.has_pending_task).where(Session.id == session_id)
+    result = await db.execute(stmt)
+    return bool(result.scalar_one_or_none())
