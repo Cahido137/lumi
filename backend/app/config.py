@@ -48,6 +48,18 @@ class AuthSettings(BaseSettings):
     jwt_algorithm: str = Field("HS256", description="JWT签名算法")
     jwt_expire_days: int = Field(7, gt=0, description="Token有效期")
 
+
+# 网络搜索工具配置
+class WebSearchSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=BASE_DIR / ".env", 
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
+    web_search_provider: str = Field("tavily", description="搜索服务商(default: Tavily)")
+    web_search_api_key: str | None = Field(None, description="网络搜索服务API密钥")
+    web_search_base_url: str = Field("https://api.tavily.com/search", description="网络搜索服务接口地址")
+
 @lru_cache
 def get_llmsettings() -> LLMSettings:
     """获得大模型配置单例"""
@@ -62,3 +74,8 @@ def get_dbsettings() -> DBSettings:
 def get_authsettings() -> AuthSettings:
     """获得认证配置单例"""
     return AuthSettings()
+
+@lru_cache
+def get_web_search_settings() -> WebSearchSettings:
+    """获得网络搜索配置单例"""
+    return WebSearchSettings()
