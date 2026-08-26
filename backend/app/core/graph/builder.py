@@ -82,6 +82,7 @@ async def model_node(state: AgentState) -> AgentState:
                 "\n严格按计划完成任务。"
                 "\n开始执行某个计划前必须调用 mark_todo_start 工具。"
                 "\n完成一个计划后必须调用 mark_todo_done 工具。"
+                "\n在给出最终回复之前, 必须确保所有已开始的计划步骤都已调用 mark_todo_done 工具。"
             )
         )
         messages = [plan_context] + state["messages"]

@@ -200,4 +200,17 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
         if not producer.done():
             producer.cancel()
             await asyncio.gather(producer, return_exceptions=True)
+
+    # 如果图是正常结束的，将所有正在执行的任务结束
+    if interrupt_info is None:
+        rows = await todos_crud.list_todos(db, session_id)  # 列出所有任务
+        finished_any = False
+        for row in rows:
+            if row.status == TodoStatus.IN_PROGRESS.value:
+                await todos_crud.update_todo_status(db, row.id, TodoStatus.DONE)
+                finished_any = True
+        if finished_any:
+            await db.commit()
+            plan_queue = await load_plan_queue(db, session_id)  # 重新加载列表以发布最新计划
+            await publish_plan(session_id, plan_queue)
     return StreamResult(final_reply=final_reply, interrupt=interrupt_info)
