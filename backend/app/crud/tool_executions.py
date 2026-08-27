@@ -32,6 +32,32 @@ async def finish_execution(db: AsyncSession, execution_id: str, status: Executio
     await db.execute(stmt)
     await db.flush()
 
+async def create_finished_execution(
+        db: AsyncSession,
+        session_id: str,
+        tool_name: str,
+        tool_call_id: str,
+        tool_input: dict,
+        status: ExecutionStatus,
+        tool_output: str | None = None
+):
+    """直接记录一条工具执行记录"""
+    if isinstance(status, ExecutionStatus):
+        status = status.value
+    execution = ToolExecution(
+        session_id=session_id,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        tool_input=tool_input or {},
+        status=status,
+        tool_output=tool_output,
+        needs_approval=False,
+        finished_at=text("clock_timestamp()")
+    )
+    db.add(execution)
+    await db.flush()
+    return execution
+
 async def get_pending_execution(db: AsyncSession, session_id: str):
     """查看会话中最早的一条待审批记录"""
     stmt = (

@@ -224,7 +224,8 @@ async def exec_node(state: AgentState) -> AgentState:
         new_executed.append(tc_id)
     node_result = {
         "messages": tool_msgs,
-        "executed_tool_call_ids": new_executed
+        "executed_tool_call_ids": new_executed,
+        "tool_inputs": {tc["id"]: tc["args"] or {} for tc in msg.tool_calls}  # 取出工具调用入参
     }
     if todos_update is not None:
         node_result["todos"] = todos_update

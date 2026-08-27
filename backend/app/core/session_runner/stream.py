@@ -85,6 +85,7 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
 
     try:
         executed_any = False  # 记录本轮是否执行过任何工具
+        tool_inputs: dict[str, dict] = {}  # 模型声明的工具调用参数  {tool_call_id: args}
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 raise RunCancelledError(streamed_text="".join(streamed_parts))
@@ -160,6 +161,7 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
             # 找到工具节点输出
             if "exec_node" in payload:
                 executed_any = True
+                tool_inputs.update(payload["exec_node"].get("tool_inputs") or {})
                 for tm in payload["exec_node"]["messages"]:
                     # 如果是todo标记工具，同步计划状态后直接跳过
                     if tm.name in TODO_MARKER_TOOLS:
@@ -182,10 +184,24 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
 
                     rejected = False
                     if matched:
+                        # 审批工具匹配到pending记录，则正常finish原本落库的待审批
                         approval = await approvals_crud.get_approval_by_execution_id(db, pending.id)
                         rejected = approval is not None and approval.status == ApprovalStatus.REJECTED.value
                         status = _resolve_execution_status(rejected, getattr(tm, "status", None))
-                        await tool_executions_crud.finish_execution(db, pending.id, status, tm.content)
+                        await tool_executions_crud.finish_execution(db, pending.id, status, content)
+                        await db.commit()
+                    else:
+                        # 不需要审批工具没有pending记录直接落库一条执行记录
+                        status = _resolve_execution_status(False, getattr(tm, "status", None))
+                        await tool_executions_crud.create_finished_execution(
+                            db=db,
+                            session_id=session_id,
+                            tool_name=tm.name,
+                            tool_call_id=tm.tool_call_id,
+                            tool_input=tool_inputs.get(tm.tool_call_id, {}),
+                            status=status,
+                            tool_output=content
+                        )
                         await db.commit()
 
                     # 审批被拒时把当前执行中的计划步骤回退为失败

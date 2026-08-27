@@ -34,6 +34,7 @@ class AgentState(TypedDict):
     tool_decisions: Annotated[dict[str, str], merge_dict_reducer]  # 每个工具调用的审批决定
     executed_tool_call_ids: Annotated[list[str], concat_list_reducer]  # 以及执行过的工具产生的tool_call_id
     pending_tool_call_id: NotRequired[str | None]  # 正在等待审批的工具call_id
+    tool_inputs: dict[str, dict]  # 工具调用入参快照  {tool_call_id: args}
 
 
 class InputState(TypedDict):
