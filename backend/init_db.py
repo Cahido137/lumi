@@ -1,14 +1,11 @@
-import asyncio
-
-from app.db import models  # noqa: F401  导入即注册模型到 Base.metadata
-from app.db.base import Base
-from app.db.session import async_engine
+from alembic import command
+from alembic.config import Config
 
 
-async def main():
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    print("所有表已创建")
+def main():
+    command.upgrade(Config("alembic.ini"), "head")
+    print("数据库迁移完成")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    main()
