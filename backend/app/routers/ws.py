@@ -1,6 +1,7 @@
 """WebSocket 路由相关"""
 
 import asyncio
+import logging
 from uuid import UUID
 
 import jwt as pyjwt
@@ -15,6 +16,8 @@ from app.utils.security import decode_access_token
 
 
 router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
+
+logger = logging.getLogger(__name__)
 
 
 async def _send_loop(websocket: WebSocket, queue: asyncio.Queue) -> None:
@@ -48,6 +51,7 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
 
     # 握手连接
     await websocket.accept()
+    logger.info("WebSocket建立连接 (session_id=%s)", sid)
     # 订阅事件
     queue = event_bus.subscribe(sid)
 
@@ -58,7 +62,9 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
         """运行结束清理任务引用并取出可能的异常"""
         tasks.discard(task)
         if not task.cancelled():
-            task.exception()  # 取出异常
+            exc = task.exception()  # 取出异常
+            if exc is not None:
+                logger.error("会话运行任务异常 (session_id=%s)", sid, exc_info=exc)
 
     try:
         send_task = asyncio.create_task(_send_loop(websocket, queue))
@@ -74,8 +80,9 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
             tasks.add(run_task)
             run_task.add_done_callback(_on_run_done)
     except WebSocketDisconnect:
-        pass
+        logger.info("WebSocket连接断开 (session_id=%s)", sid)
     except Exception:
+        logger.exception("WebSocket处理异常 (session_id=%s)", sid)
         raise WebSocketException(code=1011, reason="服务器内部错误")
     finally:
         request_cancel_session(sid)

@@ -60,6 +60,17 @@ class WebSearchSettings(BaseSettings):
     web_search_api_key: str | None = Field(None, description="网络搜索服务API密钥")
     web_search_base_url: str = Field("https://api.tavily.com/search", description="网络搜索服务接口地址")
 
+
+class LogSettings(BaseSettings):
+    """日志配置"""
+    model_config = SettingsConfigDict(
+        env_file=BASE_DIR / ".env", 
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
+    log_level: str = Field("INFO", description="日志等级")
+    database_echo: bool = Field(False, description="是否打印SQL语句")
+
 @lru_cache
 def get_llmsettings() -> LLMSettings:
     """获得大模型配置单例"""
@@ -79,3 +90,8 @@ def get_authsettings() -> AuthSettings:
 def get_web_search_settings() -> WebSearchSettings:
     """获得网络搜索配置单例"""
     return WebSearchSettings()
+
+@lru_cache
+def get_logsettings() -> LogSettings:
+    """获得日志配置单例"""
+    return LogSettings()

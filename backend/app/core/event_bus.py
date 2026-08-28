@@ -1,11 +1,14 @@
 """事件总线"""
 
 import asyncio
+import logging
 
 from app.core.events import AgentEvent
 
 
 MAX_QUEUE_SIZE = 1000
+
+logger = logging.getLogger(__name__)
 
 class EventBus:
     """事件总线类"""
@@ -39,7 +42,8 @@ class EventBus:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
-                pass  # 如果队列满了，直接丢弃此事件
+                # 如果队列满了，直接丢弃此事件
+                logger.warning("事件队列已满丢弃事件: session_id=%s, type=%s", event.session_id, event.event_type.value)
 
     def has_subscribers(self, session_id: str) -> bool:
         """检查当前会话是否还有消费者"""

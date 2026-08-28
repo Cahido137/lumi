@@ -1,5 +1,7 @@
 """会话运行器"""
 
+import logging
+
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.types import Command
 
@@ -12,6 +14,7 @@ from app.core.event_response import (
     ApprovalResultResponse,
     ErrorResponse,
 )
+from app.core.logging_config import bind_session_id, unbind_session_id
 from app.core.graph.builder import SYSTEM_PROMPT
 from app.core.plan_queue import PlanQueue
 from app.core.event_response import RunCancelledResponse
@@ -44,12 +47,15 @@ from app.schemas.enums import (
 from app.schemas.todos import TodoStatus, TodoItem
 
 
+logger = logging.getLogger(__name__)
+
 async def _run_agent_session_locked(session_id: str, content: str, *, user_message_id: str | None = None) -> Message | None:
     """执行一轮 Agent 对话。调用方必须已经持有会话锁并通过取消代际校验。"""
     # 清除上一次遗留的取消状态
     cancel_event = get_cancel_event(session_id)
     cancel_event.clear()
     _active_runs.add(session_id)  # 将本会话加入运行队列
+    logger.info("开始执行会话轮次: user_message_id=%s", user_message_id or " - ")
 
     try:
         # 发布开始事件
@@ -104,6 +110,7 @@ async def _run_agent_session_locked(session_id: str, content: str, *, user_messa
                     db, session_id, run_context.thread_id, execution.id
                 )
                 await db.commit()
+                logger.info("工具待审批: approval_id=%s, tool=%s", approval.id, stream_result.interrupt.tool)
                 await event_bus.publish(AgentEvent(
                     eventType=EventType.APPROVAL_REQUIRED,
                     sessionId=session_id,
@@ -129,6 +136,7 @@ async def _run_agent_session_locked(session_id: str, content: str, *, user_messa
 
     # 如果遇到打断
     except RunCancelledError as e:
+        logger.info("会话运行被打断")
         partial_id = None
         async with SessionLocal() as db:
             # 如果存在记录下来的已经流式输出的部分模型消息，将这部分消息落库作为一条新的模型消息
@@ -147,6 +155,7 @@ async def _run_agent_session_locked(session_id: str, content: str, *, user_messa
         raise
 
     except Exception as e:
+        logger.exception("会话运行异常")
         # 发布错误事件
         await event_bus.publish(AgentEvent(
             eventType=EventType.ERROR,
@@ -169,6 +178,7 @@ async def run_agent_session(session_id: str, content: str, *, user_message_id: s
         content: 本轮用户输入
         user_message_id: 重试场景下复用已有的用户消息ID
     """
+    _log_token = bind_session_id(session_id)
     generation = get_cancel_generation(session_id)  # 记录下本轮的代际
     register_pending_run(session_id)
     try:
@@ -178,6 +188,7 @@ async def run_agent_session(session_id: str, content: str, *, user_message_id: s
                 raise RunCancelledError()
             return await _run_agent_session_locked(session_id, content, user_message_id=user_message_id)
     finally:
+        unbind_session_id(_log_token)
         unregister_pending_run(session_id)
 
 
@@ -191,6 +202,7 @@ async def resume_agent_session(approval_id: str, decision: ApprovalStatus, scope
         session_id = approval.session_id
         thread_id = approval.thread_id
 
+    _log_token = bind_session_id(session_id)
     generation = get_cancel_generation(session_id)
     register_pending_run(session_id)
     try:
@@ -213,6 +225,8 @@ async def resume_agent_session(approval_id: str, decision: ApprovalStatus, scope
                     # 更新审批单
                     await approvals_crud.update_approval(db, approval_id, decision, scope)
                     await db.commit()
+
+                    logger.info("审批决定: approval_id=%s, decision=%s, scope=%s", approval_id, decision.value, scope.value)
 
                     # 发布审批结束事件到总线
                     await event_bus.publish(AgentEvent(
@@ -254,6 +268,7 @@ async def resume_agent_session(approval_id: str, decision: ApprovalStatus, scope
                             db, session_id, thread_id, execution.id
                         )
                         await db.commit()
+                        logger.info("恢复执行后再次出现审批: approval_id=%s, tool=%s", new_approval.id, stream_result.interrupt.tool)
                         await event_bus.publish(AgentEvent(
                             eventType=EventType.APPROVAL_REQUIRED,
                             sessionId=session_id,
@@ -277,6 +292,7 @@ async def resume_agent_session(approval_id: str, decision: ApprovalStatus, scope
                 return stream_result.final_reply
 
             except RunCancelledError as e:
+                logger.info("恢复执行被打断")
                 partial_id = None
                 async with SessionLocal() as db:
                     # 如果存在记录下来的已经流式输出的部分模型消息，将这部分消息落库作为一条新的模型消息
@@ -298,11 +314,13 @@ async def resume_agent_session(approval_id: str, decision: ApprovalStatus, scope
                 # 将当前会话清出运行队列
                 _active_runs.discard(session_id)
     finally:
+        unbind_session_id(_log_token)
         unregister_pending_run(session_id)
 
 
 async def retry_agent_session(session_id: str, message_id: str, new_content: str | None) -> Message | None:
     """重新运行某条用户消息"""
+    _log_token = bind_session_id(session_id)
     generation = get_cancel_generation(session_id)  # 记录入队时的取消ID
     register_pending_run(session_id)
     try:
@@ -335,4 +353,5 @@ async def retry_agent_session(session_id: str, message_id: str, new_content: str
             # 重跑消息
             return await _run_agent_session_locked(session_id, content, user_message_id=message_id)
     finally:
+        unbind_session_id(_log_token)
         unregister_pending_run(session_id)

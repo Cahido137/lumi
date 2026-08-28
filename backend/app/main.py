@@ -1,5 +1,6 @@
 """FastAPI 入口"""
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,17 +10,24 @@ from app.core import compat  # 兼容层
 from app.core.checkpoint import close_checkpoint, setup_checkpoint
 from app.routers import chat, sessions, ws, approvals, auth
 from app.utils.exception_handlers import register_exception_handlers
+from app.config import get_logsettings
+from app.core.logging_config import setup_logging
 
+
+logger = logging.getLogger(__name__)
+
+# 初始化日志
+setup_logging(get_logsettings().log_level)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """生命周期钩子"""
     await setup_checkpoint()  # 初始化检查表
-    print("[INFO] 检查点已初始化")
+    logger.info("检查点已初始化")
     # 运行中
     yield
     await close_checkpoint()  # 关闭检查点
-    print("[INFO] 检查点已关闭")
+    logger.info("检查点已关闭")
 
 
 app = FastAPI(lifespan=lifespan)

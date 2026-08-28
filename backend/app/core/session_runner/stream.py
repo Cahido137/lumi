@@ -1,6 +1,7 @@
 """图流处理"""
 
 import asyncio
+import logging
 from functools import partial
 
 from app.core.checkpoint import get_checkpointer
@@ -30,6 +31,8 @@ from app.crud import sessions as sessions_crud
 from app.schemas.enums import EventType, TodoStatus, ExecutionStatus, ApprovalStatus
 from app.schemas.todos import TodoItem
 
+
+logger = logging.getLogger(__name__)
 
 # 图单例
 _agent_graph = None
@@ -203,6 +206,7 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                             tool_output=content
                         )
                         await db.commit()
+                    logger.info("工具执行落库: name=%s, tool_call_id=%s, status=%s", tm.name, tm.tool_call_id, status.value)
 
                     # 审批被拒时把当前执行中的计划步骤回退为失败
                     if rejected:

@@ -1,14 +1,16 @@
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from app.config import get_dbsettings
+from app.config import get_dbsettings, get_logsettings
 
 
 # 获取数据库配置信息
 db_settings = get_dbsettings()
+# 获取日志配置信息
+log_settings = get_logsettings()
 
 # 创建异步引擎
 async_engine = create_async_engine(
     url=db_settings.database_url,
-    echo=True,
+    echo=log_settings.database_echo,
     pool_pre_ping=True
 )
 
