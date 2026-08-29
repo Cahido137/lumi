@@ -49,7 +49,7 @@ async def test_unsubscribe_only_removes_own_queue():
     q1 = bus.subscribe("s1")
     q2 = bus.subscribe("s1")
     bus.unsubscribe("s1", q1)
-    assert bus.has_subscribers() is True
+    assert bus.has_subscribers("s1") is True
     await bus.publish(make_event("s1"))
     assert q2.qsize() == 1
 
