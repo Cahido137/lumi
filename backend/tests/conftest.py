@@ -34,6 +34,7 @@ def test_db():
     conn.close()
 
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
     command.upgrade(cfg, "head")
     yield
 
