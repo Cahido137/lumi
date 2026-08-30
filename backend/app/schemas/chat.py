@@ -12,7 +12,7 @@ class ChatResponse(BaseModel):
     """聊天响应体"""
     session_id: str = Field(..., alias="sessionId")
     reply: str
-    created_at: datetime = Field(None, alias="createdAt")
+    created_at: datetime | None = Field(None, alias="createdAt")
 
 class MessageSingleResponse(BaseModel):
     """单条消息回复"""
