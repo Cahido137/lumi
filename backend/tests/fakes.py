@@ -64,5 +64,6 @@ def make_graph(monkeypatch, model, planner, tools):
     """组装被测图: 模型/计划器/工具全部换成假的, 检查点用内存实现"""
     monkeypatch.setattr(builder, "_model_with_tools", model)
     monkeypatch.setattr(builder, "create_planner_llm", lambda: planner)
+    monkeypatch.setattr(builder, "get_planner_structured_method", lambda: "function_calling")
     monkeypatch.setattr(builder, "TOOLS_BY_NAME", tools)
     return build_agent_graph(checkpointer=InMemorySaver())

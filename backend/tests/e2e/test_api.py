@@ -18,6 +18,7 @@ def patch_agent_deps(monkeypatch, model, tools=None):
     """替换全局图单例运行时的模型/计划器/工具"""
     monkeypatch.setattr(builder, "_model_with_tools", model)
     monkeypatch.setattr(builder, "create_planner_llm", lambda: FakePlanner([]))
+    monkeypatch.setattr(builder, "get_planner_structured_method", lambda: "function_calling")
     monkeypatch.setattr(builder, "TOOLS_BY_NAME", tools or {})
 
 
