@@ -66,7 +66,15 @@ async def list_messages(
     skip = (page - 1) * page_size
     messages = await messages_crud.list_messages(db, str(session_id), skip, page_size)
     message_list = [
-        MessageSingleResponse(id=m.id, role=m.role, content=m.content, createdAt=m.created_at) 
+        MessageSingleResponse(
+            id=m.id, 
+            role=m.role, 
+            content=m.content, 
+            toolName=m.tool_name,
+            toolCalls=m.tool_calls,
+            toolCallId=m.tool_call_id,
+            createdAt=m.created_at
+        ) 
         for m in messages
     ]
     return success_response(

@@ -46,6 +46,9 @@ class Message(Base):
     session_id: Mapped[str] = mapped_column(ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID")
     role: Mapped[str] = mapped_column(String(20), comment="user=用户, assistant=模型, system=系统提示词, tool=工具消息")
     content: Mapped[str] = mapped_column(Text, default="", comment="消息正文")
+    tool_call_id: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="ToolMessage存储的tool_call_id")
+    tool_name: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="ToolMessage的工具名")
+    tool_calls: Mapped[list | None] = mapped_column(JSONB, nullable=True, comment="模型声明的工具调用列表")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("clock_timestamp()"), comment="消息产生时间")
 
 

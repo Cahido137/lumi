@@ -2,7 +2,7 @@ from typing import Literal
 from uuid import uuid4
 
 from langgraph.graph import StateGraph, START, END
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 from langgraph.types import interrupt
 
 from app.core.graph.state import AgentState, InputState, OutputState
@@ -13,17 +13,15 @@ from app.core.graph.schemas import PlanOutput, ApprovalInterrupt
 from app.core.grants import Grants
 from app.schemas.todos import TodoItem
 from app.schemas.enums import TodoStatus, ApprovalStatus
-
-
-# 系统提示词
-SYSTEM_PROMPT = "你是一个AI智能助手, 可以使用工具完成用户的任务。回答使用中文。"
-
-# 计划器提示词
-PLANNER_PROMPT = (
-    "你是一个任务规划器, 将用户的需求拆分成多个条例清晰、有先后顺序的todo计划。"
-    "要求步骤之间不能有重叠, 设计的步骤数不宜过多, 也不可为了追求步骤少而放弃了清晰的条理。"
-    "如果用户的需求足够简单, 无需分步即可直接回答, 可以返回空的todos列表。"
+from app.core.prompts import(
+    PLANNER_EXISTING_PLAN_PROMPT,
+    PLANNER_PROMPT,
+    PLAN_EXECUTION_PROMPT,
+    TOOL_FEEDBACK_EXEC_FAILED,
+    TOOL_FEEDBACK_REJECTED,
+    TOOL_FEEDBACK_TODO_NOT_FOUND,
 )
+
 
 # 需要审批的工具列表
 APPROVAL_REQUIRED_TOOLS = ["run_shell", "write_file"]
@@ -51,18 +49,18 @@ async def planner_node(state: AgentState) -> AgentState:
     """计划器节点"""
     task = state["messages"][-1].content  # 拿到用户的消息
     existing_todos = sorted(state.get("todos") or [], key=lambda x: x.position)
-    prompt_messages = [SystemMessage(content=PLANNER_PROMPT)]
+
+    existing_context = []
     if existing_todos:
-        existing_lines = [f"{i + 1}. {t.title}" for i, t in enumerate(existing_todos)]
-        prompt_messages.append(HumanMessage(
-            content=(
-                "当前已有计划: \n" + "\n".join(existing_lines) + 
-                "\n如果用户的新消息是对该计划的延续(如要求继续等), 返回空的列表以沿用旧计划列表。"
-                "\n如果是全新的任务, 请给出新的计划列表。当然如果任务过于简单不需要设置计划, 也可以返回空列表。"
-            )
-        ))
-    prompt_messages.append(HumanMessage(content=task))
-    # 让模型以结构化方式输出todos
+        existing_lines = [f"{i + 1}. {t.title}" for i, t in enumerate(existing_todos)]  # 已经存在的todo列表
+        existing_context = PLANNER_EXISTING_PLAN_PROMPT.format_messages(
+            existing_plan="\n".join(existing_lines)
+        )
+    # 拼接提示词
+    prompt_messages = PLANNER_PROMPT.format_messages(
+        existing_plan_context=existing_context,
+        task=task,
+    )
     planner_llm = create_planner_llm().with_structured_output(
         PlanOutput,
         method="function_calling"
@@ -92,17 +90,10 @@ async def model_node(state: AgentState) -> AgentState:
             f"{todo.position + 1}. {todo.title} [{getattr(todo.status, 'value', todo.status)}] (todo_id: {todo.id})"
             for todo in todos
         ]
-        plan_context = SystemMessage(
-            content=(
-                "当前正在执行计划: \n" + "\n".join(plan_lines) +
-                "\n如果用户当前的问题与计划相关, 严格按计划完成任务。"
-                "\n如果用户提问的问题是与计划无关的问题, 则直接回答问题, 不需要执行以下规定的 mark 工作。"
-                "\n开始执行某个计划前必须调用 mark_todo_start 工具。"
-                "\n完成一个计划后必须调用 mark_todo_done 工具。"
-                "\n在给出最终回复之前, 必须确保所有已开始的计划步骤都已调用 mark_todo_done 工具。"
-            )
+        plan_context = PLAN_EXECUTION_PROMPT.format_messages(
+            plan_lines="\n".join(plan_lines)
         )
-        messages = [plan_context] + state["messages"]
+        messages = plan_context + state["messages"]
     response = await _model_with_tools.ainvoke(messages)
     return {
         "messages": [response]
@@ -177,7 +168,7 @@ async def exec_node(state: AgentState) -> AgentState:
         if decision is not None and decision != ApprovalStatus.APPROVED.value:
             tool_msgs.append(ToolMessage(
                 name=tc_name,
-                content="用户拒绝此操作",
+                content=TOOL_FEEDBACK_REJECTED,
                 tool_call_id=tc_id,
                 status="error"
             ))
@@ -188,7 +179,7 @@ async def exec_node(state: AgentState) -> AgentState:
             if todo_id not in {t.id for t in (state.get("todos") or [])}:
                 tool_msgs.append(ToolMessage(
                     name=tc_name,
-                    content=f"未找到id为{todo_id}的计划。核对ID后重试",
+                    content=TOOL_FEEDBACK_TODO_NOT_FOUND.format(todo_id=todo_id),
                     tool_call_id=tc_id,
                     status="success"
                 ))
@@ -200,7 +191,7 @@ async def exec_node(state: AgentState) -> AgentState:
         except Exception as e:
             tool_msgs.append(ToolMessage(
                 name=tc_name,
-                content=f"工具执行失败: {e}",
+                content=TOOL_FEEDBACK_EXEC_FAILED.format(error=e),
                 tool_call_id=tc_id,
                 status="error"
             ))

@@ -19,6 +19,9 @@ class MessageSingleResponse(BaseModel):
     id: str
     role: MessageRole
     content: str
+    tool_name: str | None = Field(None, alias="toolName")
+    tool_call_id: str | None = Field(None, alias="toolCallId")
+    tool_calls: list | None = Field(None, alias="toolCalls")
     created_at: datetime = Field(..., alias="createdAt")
 
 class MessageListResponse(BaseModel):
