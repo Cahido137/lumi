@@ -2,7 +2,7 @@
 
 import logging
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from app.core.event_bus import event_bus
@@ -15,7 +15,7 @@ from app.core.event_response import (
     ErrorResponse,
 )
 from app.core.logging_config import bind_session_id, unbind_session_id
-from app.core.graph.builder import SYSTEM_PROMPT
+from app.core.prompts import get_system_messages
 from app.core.plan_queue import PlanQueue
 from app.core.event_response import RunCancelledResponse
 from app.core.session_runner.context import StreamResult
@@ -77,7 +77,7 @@ async def _run_agent_session_locked(session_id: str, content: str, *, user_messa
             if user_message_id is not None:
                 history_row = [row for row in history_row if row.id != user_message_id]
             history = to_langchain_messages(history_row)
-            messages = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=content)]
+            messages = get_system_messages() + history + [HumanMessage(content=content)]
 
             # 用户消息落库
             if user_message_id is None:
