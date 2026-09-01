@@ -23,11 +23,27 @@ async def list_message_asc(db: AsyncSession, session_id: str):
     result = await db.execute(stmt)
     return result.scalars().all()
 
-async def add_message(db: AsyncSession, session_id: str, role: MessageRole | str, content: str) -> Message:
+async def add_message(
+        db: AsyncSession, 
+        session_id: str, 
+        role: MessageRole | str, 
+        content: str,
+        *,
+        tool_call_id: str | None = None,
+        tool_name: str | None = None,
+        tool_calls: list | None = None
+    ) -> Message:
     """新增消息并返回消息对象"""
     if isinstance(role, MessageRole):
         role = role.value
-    message = Message(session_id=session_id, role=role, content=content)  # 创建消息 ORM
+    message = Message(
+        session_id=session_id, 
+        role=role, 
+        content=content,
+        tool_call_id=tool_call_id,
+        tool_name=tool_name,
+        tool_calls=tool_calls
+    )  # 创建消息 ORM
     db.add(message)  # 向数据库添加消息
     await sessions_crud.touch_session(db, session_id)
     await db.flush()

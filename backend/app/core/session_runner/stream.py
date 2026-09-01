@@ -28,7 +28,8 @@ from app.crud import todos as todos_crud
 from app.crud import tool_executions as tool_executions_crud
 from app.crud import approvals as approvals_crud
 from app.crud import sessions as sessions_crud
-from app.schemas.enums import EventType, TodoStatus, ExecutionStatus, ApprovalStatus
+from app.crud import messages as messages_crud
+from app.schemas.enums import EventType, TodoStatus, ExecutionStatus, ApprovalStatus, MessageRole
 from app.schemas.todos import TodoItem
 
 
@@ -145,6 +146,18 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
             if "model_node" in payload:
                 msg = payload["model_node"]["messages"][-1]  # 拿到最近一条消息
                 if msg.tool_calls:
+                    # 将消息落库
+                    normalized_calls = [
+                        {"name": tc["name"], "args": tc["args"], "id": tc["id"]}
+                        for tc in msg.tool_calls
+                    ]
+                    content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    await messages_crud.add_message(
+                        db, session_id, MessageRole.ASSISTANT, content,
+                        tool_calls=normalized_calls
+                    )
+                    await db.commit()
+
                     for tool in msg.tool_calls:
                         # todo标记工具不发布
                         if tool["name"] in TODO_MARKER_TOOLS:
@@ -166,14 +179,20 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                 executed_any = True
                 tool_inputs.update(payload["exec_node"].get("tool_inputs") or {})
                 for tm in payload["exec_node"]["messages"]:
+                    # 先提取出消息块，并确保是字符串
+                    content = tm.content if isinstance(tm.content, str) else str(tm.content)
+                    await messages_crud.add_message(
+                        db, session_id, MessageRole.TOOL, content,
+                        tool_call_id=tm.tool_call_id,
+                        tool_name=tm.name
+                    )
+                    await db.commit()
+
                     # 如果是todo标记工具，同步计划状态后直接跳过
                     if tm.name in TODO_MARKER_TOOLS:
                         plan_queue = await load_plan_queue(db, session_id)  # 重新从数据库读入计划列表刷新
                         await publish_plan(session_id, plan_queue)
                         continue
-
-                    # 先提取出消息块，并确保是字符串
-                    content = tm.content if isinstance(tm.content, str) else str(tm.content)
 
                     pending = await tool_executions_crud.get_pending_execution_by_call_id(db, session_id, tm.tool_call_id)
                     if pending is None:
