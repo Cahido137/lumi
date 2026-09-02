@@ -104,6 +104,15 @@ def create_planner_llm() -> BaseChatModel:
     return create_llm()
 
 
+def get_planner_structured_method() -> str:
+    """规划器结构化输出方式, ollama 走 json 模式"""
+    settings = get_llmsettings()
+    provider = settings.llm_provider or detect_provider(settings.llm_base_url)
+    if provider == "ollama" or "ollama" in (settings.llm_base_url or "").lower():
+        return "json_mode"
+    return "function_calling"
+
+
 async def ping_chat_model(llm: BaseChatModel | None = None, timeout: float = 15.0) -> tuple[bool, str]:
     """
     模型连通性检查

@@ -23,6 +23,10 @@ class EventType(str, Enum):
     APPROVAL_REQUIRED = "approval_required"  # data: {"approval_id": 审批ID, "tool": 待审批工具, "tool_input": 工具输入}
     APPROVAL_RESULT = "approval_result"  # data: {"approval_id": 审批ID, "status": "approved"/"rejected"}
 
+    # 上下文压缩相关
+    CONTEXT_WARNING = "context_warning"  # data: {"used_tokens": 当前已用上下文tokens, "max_context_tokens": 模型最大上下文, "fractions": 使用比例, "message": 警告消息}
+    CONTEXT_COMPACTED = "context_compacted"  # data: {"before_tokens": 压缩前上下文tokens, "after_tokens": 压缩后上下文tokens, "summarized_message_count": 被摘要消息数}
+
 class TodoStatus(str, Enum):
     """todo 状态枚举"""
     PENDING = "pending"  # 未执行

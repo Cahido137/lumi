@@ -1,12 +1,14 @@
+import logging
 from typing import Literal
 from uuid import uuid4
 
 from langgraph.graph import StateGraph, START, END
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.output_parsers import PydanticOutputParser
 from langgraph.types import interrupt
 
 from app.core.graph.state import AgentState, InputState, OutputState
-from app.core.llm import get_chat_model, create_planner_llm
+from app.core.llm import get_chat_model, create_planner_llm, get_planner_structured_method
 from app.core.tools import TOOLS
 from app.core.tools.todo_tool import TODO_MARKER_TOOLS, TODO_START_TOOL, TODO_DONE_TOOL
 from app.core.graph.schemas import PlanOutput, ApprovalInterrupt
@@ -29,6 +31,8 @@ APPROVAL_REQUIRED_TOOLS = ["run_shell", "write_file"]
 # 构建工具名称映射字典列表
 TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
 
+logger = logging.getLogger(__name__)
+
 
 # 获得模型
 _model = get_chat_model()
@@ -43,6 +47,15 @@ def _find_tool_call_message(state: AgentState):
         if getattr(msg, "tool_calls", None):
             return msg
     return None
+
+
+async def _invoke_planner(planner_llm, prompt_messages):
+    """调用规划器, 失败记日志并返回None"""
+    try:
+        return await planner_llm.ainvoke(prompt_messages)
+    except Exception:
+        logger.warning("规划器调用或结构化解析失败", exc_info=True)
+        return None
 
 
 async def planner_node(state: AgentState) -> AgentState:
@@ -61,15 +74,26 @@ async def planner_node(state: AgentState) -> AgentState:
         existing_plan_context=existing_context,
         task=task,
     )
+    method = get_planner_structured_method()
+    if method == "json_mode":
+        prompt_messages = prompt_messages + [
+            HumanMessage(content=PydanticOutputParser(pydantic_object=PlanOutput).get_format_instructions())
+        ]
     planner_llm = create_planner_llm().with_structured_output(
         PlanOutput,
-        method="function_calling"
+        method=method
     )
-    plans = await planner_llm.ainvoke(prompt_messages)
+    plans = await _invoke_planner(planner_llm, prompt_messages)
+
+    if plans is None:
+        logger.warning("规划器未返回结构化计划, 重试一次")
+        plans = await _invoke_planner(planner_llm, prompt_messages)
 
     # 如果有旧计划没有完成并且返回了空列表则沿用旧计划
-    if not plans.todos and existing_todos:
-        return {}
+    if plans is None or not plans.todos:
+        if existing_todos:
+            return {}
+        return {"todos": []}
 
     # 构建 todos 列表
     todos = [

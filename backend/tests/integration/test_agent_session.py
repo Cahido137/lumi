@@ -32,6 +32,7 @@ def patch_agent_deps(monkeypatch, model, tools=None):
     """替换全局图单例运行时的模型/计划器/工具"""
     monkeypatch.setattr(builder, "_model_with_tools", model)
     monkeypatch.setattr(builder, "create_planner_llm", lambda: FakePlanner([]))
+    monkeypatch.setattr(builder, "get_planner_structured_method", lambda: "function_calling")
     monkeypatch.setattr(builder, "TOOLS_BY_NAME", tools or {})
 
 
@@ -185,7 +186,7 @@ async def test_cancel_queued_run_aborts(monkeypatch):
 
 
 async def test_retry_cleans_and_reruns(monkeypatch):
-    """场景7: 重试清理旧回复与工具记录后重新运行"""
+    """场景7: 重试清理旧回复与工具记录后重跑, 中间工具消息随链路落库"""
     tool = FakeTool("web_search", result="结果")
     patch_agent_deps(monkeypatch, ScriptedModel([
         AIMessage(content="", tool_calls=[tool_call("web_search", {"query": "旧问题"}, "c1")]),
@@ -200,7 +201,12 @@ async def test_retry_cleans_and_reruns(monkeypatch):
     user_msg_id = (await list_messages(sid))[0].id
     new_reply = await retry_agent_session(sid, user_msg_id, "新问题")
     assert new_reply.content == "新回答"
-    assert [m.content for m in await list_messages(sid)] == ["新问题", "新回答"]
+    assert [(m.role, m.content) for m in await list_messages(sid)] == [
+        (MessageRole.USER.value, "新问题"),
+        (MessageRole.ASSISTANT.value, ""),
+        (MessageRole.TOOL.value, "结果"),
+        (MessageRole.ASSISTANT.value, "新回答"),
+    ]
     rows = await get_executions(sid)
     assert len(rows) == 1  # 旧的执行记录已被清理
     assert rows[0].tool_input == {"query": "新问题"}

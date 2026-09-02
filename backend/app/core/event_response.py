@@ -43,3 +43,14 @@ class ApprovalRequiredResponse(BaseEventResponse):
 class ApprovalResultResponse(BaseEventResponse):
     approval_id: str = Field(..., description="审批ID")
     status: ApprovalStatus = Field(..., description="审批结果")
+
+class ContextWarningResponse(BaseEventResponse):
+    used_tokens: int = Field(..., description="当前已使用的上下文token数")
+    max_context_tokens: int = Field(..., description="模型最大上下文token数")
+    fraction: float = Field(..., description="当前上下文使用比例")
+    message: str = Field(..., description="警告消息")
+
+class ContextCompactedResponse(BaseEventResponse):
+    before_tokens: int = Field(..., description="压缩前上下文token数")
+    after_tokens: int = Field(..., description="压缩后上下文token数")
+    summarized_message_count: int = Field(..., description="被摘要的消息数量")

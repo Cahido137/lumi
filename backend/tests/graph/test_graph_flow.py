@@ -2,6 +2,8 @@
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
+from app.core.graph import builder
+from app.core.graph.schemas import PlanItem, PlanOutput
 from app.core.grants import Grants
 from app.schemas.todos import TodoItem, TodoStatus
 from tests.fakes import FakePlanner, FakeTool, ScriptedModel, make_graph
@@ -190,3 +192,33 @@ async def test_tool_failure_marks_error(monkeypatch):
     tool_msgs = [m for m in result["messages"] if isinstance(m, ToolMessage)]
     assert tool_msgs[0].status == "error"
     assert "工具执行失败" in tool_msgs[0].content
+
+
+class RecordingPlanner:
+    """记录结构化输出方式与提示词的计划器"""
+
+    def __init__(self):
+        self.method = None
+        self.messages = None
+
+    def with_structured_output(self, schema, method=None):
+        self.method = method
+        return self
+
+    async def ainvoke(self, messages, **kwargs):
+        self.messages = messages
+        return PlanOutput(todos=[PlanItem(title="步骤一")])
+
+
+async def test_ollama_planner_uses_json_mode(monkeypatch):
+    """ollama适配: 规划器走json_mode, 提示词附带JSON格式说明"""
+    model = ScriptedModel([AIMessage(content="完成")])
+    planner = RecordingPlanner()
+    graph = make_graph(monkeypatch, model, planner, {})
+    monkeypatch.setattr(builder, "get_planner_structured_method", lambda: "json_mode")
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="做任务")]}, CONFIG
+    )
+    assert planner.method == "json_mode"
+    assert '"todos"' in str(planner.messages[-1].content)
+    assert result["messages"][-1].content == "完成"
