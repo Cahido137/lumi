@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
 # 根据当前文件位置找到根目录绝对位置
@@ -71,6 +71,30 @@ class LogSettings(BaseSettings):
     log_level: str = Field("INFO", description="日志等级")
     database_echo: bool = Field(False, description="是否打印SQL语句")
 
+
+class CompactSettings(BaseSettings):
+    """上下文压缩配置"""
+    model_config = SettingsConfigDict(
+        env_file=BASE_DIR / ".env", 
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
+    compact_enabled: bool = Field(True, description="是否启用上下文压缩")
+    compact_trigger_fraction: float = Field(0.75, gt=0, le=1.0, description="自动触发压缩的上下文比例")
+    compact_warn_fraction: float = Field(0.6, gt=0, le=1.0, description="触发上下文警告的上下文比例")
+    compact_keep_fraction: float = Field(0.3, gt=0, le=1.0, description="压缩后保留原文的上下文比例")
+    compact_model_max_tokens: int | None = Field(None, gt=0, description="当前模型的最大上下文")
+    compact_default_max_tokens: int = Field(64000, gt=0, description="默认的上下文")
+
+    @model_validator(mode="after")
+    def _validate_fractions(self):
+        """检查警告比例和自动触发压缩比例是否满足指定大小关系"""
+        if self.compact_trigger_fraction <= self.compact_warn_fraction:
+            raise ValueError("compact_warn_fraction must be less than compact_trigger_fraction")
+        if self.compact_trigger_fraction <= self.compact_keep_fraction:
+            raise ValueError("compact_keep_fraction must be less than compact_trigger_fraction")
+        return self
+
 @lru_cache
 def get_llmsettings() -> LLMSettings:
     """获得大模型配置单例"""
@@ -95,3 +119,8 @@ def get_web_search_settings() -> WebSearchSettings:
 def get_logsettings() -> LogSettings:
     """获得日志配置单例"""
     return LogSettings()
+
+@lru_cache
+def get_compactsettings() -> CompactSettings:
+    """获得上下文压缩配置单例"""
+    return CompactSettings()

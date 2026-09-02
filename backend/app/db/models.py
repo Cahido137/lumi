@@ -34,6 +34,8 @@ class Session(Base):
     title: Mapped[str] = mapped_column(String(200), default="新会话", comment="会话标题")
     status: Mapped[str] = mapped_column(String(20), default="active", comment="active=进行中, archived=已归档")
     has_pending_task: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否存在被打断未完成的任务")
+    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="上下文摘要, None表示未压缩")
+    summary_until_message_id: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="摘要覆盖的最后一条消息ID")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="更新时间")
 
@@ -47,6 +49,7 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(20), comment="user=用户, assistant=模型, system=系统提示词, tool=工具消息")
     content: Mapped[str] = mapped_column(Text, default="", comment="消息正文")
     tool_call_id: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="ToolMessage存储的tool_call_id")
+    usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True, comment="模型返回的usage_metadata元数据")  # {input_tokens, output_tokens, total_tokens}
     tool_name: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="ToolMessage的工具名")
     tool_calls: Mapped[list | None] = mapped_column(JSONB, nullable=True, comment="模型声明的工具调用列表")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("clock_timestamp()"), comment="消息产生时间")
