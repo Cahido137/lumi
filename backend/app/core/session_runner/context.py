@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from app.core.graph.schemas import ApprovalInterrupt
+from app.schemas.usage import UsageMetadata
 
 
 # 运行上下文
@@ -16,3 +17,4 @@ class RunContext:
 class StreamResult:
     final_reply: str
     interrupt: ApprovalInterrupt | None = None
+    final_usage: UsageMetadata | None = None

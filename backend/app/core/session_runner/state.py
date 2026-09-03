@@ -70,6 +70,10 @@ def has_pending_runs(session_id: str) -> bool:
     """是否存在排队中或执行中的轮次"""
     return _pending_runs.get(session_id, 0) > 0
 
+def is_session_running(session_id: str) -> bool:
+    """检查当前会话是否有正在运行的图流任务"""
+    return session_id in _active_runs
+
 
 # 中断哨兵
 _CANCELLED = object()

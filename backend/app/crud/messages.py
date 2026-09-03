@@ -2,12 +2,13 @@
 
 from datetime import datetime
 
-from sqlalchemy import select, delete, update
+from sqlalchemy import select, delete, update, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # 导入消息 ORM
 from app.db.models import Message
 from app.schemas.enums import MessageRole
+from app.schemas.usage import UsageMetadata
 from app.crud import sessions as sessions_crud
 
 
@@ -23,6 +24,26 @@ async def list_message_asc(db: AsyncSession, session_id: str):
     result = await db.execute(stmt)
     return result.scalars().all()
 
+async def list_messages_after(db: AsyncSession, session_id: str, after_message_id: str | None = None) -> list[Message]:
+    """查询指定会话的某条消息之后的所有消息(不包含指定消息)"""
+    # 如果没有指定消息，则认为是全量查询
+    if after_message_id is None:
+        return await list_message_asc(db, session_id)
+    # 获取指定消息，并查询之后的消息
+    boundary = await db.get(Message, after_message_id)
+    if boundary is None or boundary.session_id != session_id:
+        return await list_message_asc(db, session_id)
+    # 查询指定消息之后的消息
+    stmt = (
+        select(Message)
+        .where(
+            Message.session_id == session_id,
+            tuple_(Message.created_at, Message.id) > tuple_(boundary.created_at, boundary.id)
+        ).order_by(Message.created_at.asc(), Message.id.asc())
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
 async def add_message(
         db: AsyncSession, 
         session_id: str, 
@@ -31,7 +52,8 @@ async def add_message(
         *,
         tool_call_id: str | None = None,
         tool_name: str | None = None,
-        tool_calls: list | None = None
+        tool_calls: list | None = None,
+        usage: UsageMetadata | None = None
     ) -> Message:
     """新增消息并返回消息对象"""
     if isinstance(role, MessageRole):
@@ -42,7 +64,8 @@ async def add_message(
         content=content,
         tool_call_id=tool_call_id,
         tool_name=tool_name,
-        tool_calls=tool_calls
+        tool_calls=tool_calls,
+        usage=usage.model_dump() if usage is not None else None
     )  # 创建消息 ORM
     db.add(message)  # 向数据库添加消息
     await sessions_crud.touch_session(db, session_id)

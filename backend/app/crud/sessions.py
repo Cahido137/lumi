@@ -50,3 +50,32 @@ async def get_has_pending_task(db: AsyncSession, session_id: str) -> bool:
     stmt = select(Session.has_pending_task).where(Session.id == session_id)
     result = await db.execute(stmt)
     return bool(result.scalar_one_or_none())
+
+async def set_context_summary(
+        db: AsyncSession, 
+        session_id: str,
+        summary_text: str | None,
+        until_message_id: str | None
+    ) -> None:
+    """为指定会话保存压缩后上下文摘要"""
+    stmt = (
+        update(Session)
+        .where(Session.id == session_id)
+        .values(summary_text=summary_text, summary_until_message_id=until_message_id)
+    )
+    await db.execute(stmt)
+    await db.flush()
+
+async def get_context_summary(db: AsyncSession, session_id: str) -> tuple[str | None, str | None]:
+    """
+    返回会话的上下文摘要信息
+    
+    Returns:
+        (摘要正文, 摘要覆盖的最后一条消息ID)
+    """
+    stmt = select(Session.summary_text, Session.summary_until_message_id).where(Session.id == session_id)
+    result = await db.execute(stmt)
+    row = result.one_or_none()
+    if row is None:
+        return None, None
+    return row.summary_text, row.summary_until_message_id
