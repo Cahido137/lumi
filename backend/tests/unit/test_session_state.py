@@ -15,7 +15,8 @@ from app.core.session_runner.state import(
     has_pending_runs,
     register_active_task,
     unregister_active_task,
-    request_cancel_session
+    request_cancel_session,
+    is_session_running
 )
 
 
@@ -89,3 +90,17 @@ async def test_request_cancel_bumps_generation_for_queued():
 def test_request_cancel_noop_when_idle():
     """完全空闲的会话: 返回False, 没有可取消的东西"""
     assert request_cancel_session("i1") is False
+
+def test_is_session_running_reflects_active_runs():
+    """运行状态判断与活动运行集合同步"""
+    assert is_session_running("r1") is False
+    state._active_runs.add("r1")
+    assert is_session_running("r1") is True
+    state._active_runs.discard("r1")
+    assert is_session_running("r1") is False
+
+def test_is_session_running_isolated_per_session():
+    """一个会话运行中不影响其他会话的判断"""
+    state._active_runs.add("r2")
+    assert is_session_running("r2") is True
+    assert is_session_running("r3") is False
