@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import select, delete, update, tuple_
+from sqlalchemy import select, delete, update, tuple_, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # 导入消息 ORM
@@ -38,7 +38,13 @@ async def list_messages_after(db: AsyncSession, session_id: str, after_message_i
         select(Message)
         .where(
             Message.session_id == session_id,
-            tuple_(Message.created_at, Message.id) > tuple_(boundary.created_at, boundary.id)
+            or_(
+                Message.created_at > boundary.created_at,
+                and_(
+                    Message.created_at == boundary.created_at,
+                    Message.id > boundary.id
+                )
+            )
         ).order_by(Message.created_at.asc(), Message.id.asc())
     )
     result = await db.execute(stmt)
