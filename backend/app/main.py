@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core import compat  # 兼容层
 from app.core.checkpoint import close_checkpoint, setup_checkpoint
-from app.routers import chat, sessions, ws, approvals, auth
+from app.routers import chat, sessions, ws, approvals, auth, context
 from app.utils.exception_handlers import register_exception_handlers
 from app.config import get_logsettings
 from app.core.logging_config import setup_logging
@@ -50,3 +50,4 @@ app.include_router(sessions.router)
 app.include_router(ws.router)
 app.include_router(approvals.router)
 app.include_router(auth.router)
+app.include_router(context.router)
