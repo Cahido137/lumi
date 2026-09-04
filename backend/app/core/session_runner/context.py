@@ -12,6 +12,7 @@ class RunContext:
     config: dict
     thread_id: str
 
+
 # 图执行结果
 @dataclass
 class StreamResult:

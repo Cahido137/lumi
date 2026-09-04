@@ -1,7 +1,7 @@
 """上下文压缩事件枚举与响应结构单元测试"""
 
+from app.core.event_response import ContextCompactedResponse, ContextWarningResponse
 from app.schemas.enums import EventType
-from app.core.event_response import ContextWarningResponse, ContextCompactedResponse
 
 
 def test_context_event_type_values():

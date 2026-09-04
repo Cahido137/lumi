@@ -2,9 +2,9 @@
 
 import asyncio
 
-
 # 会话级运行锁
 _session_lock: dict[str, asyncio.Lock] = {}  # {会话ID: 运行锁对象}
+
 
 def get_session_lock(session_id: str) -> asyncio.Lock:
     """获取会话级运行锁对象"""
@@ -19,6 +19,7 @@ def get_session_lock(session_id: str) -> asyncio.Lock:
 # 会话级取消事件
 _cancel_events: dict[str, asyncio.Event] = {}  # {会话ID: 取消事件对象}
 
+
 def get_cancel_event(session_id: str) -> asyncio.Event:
     """获取会话级取消事件对象"""
     event = _cancel_events.get(session_id)
@@ -30,9 +31,12 @@ def get_cancel_event(session_id: str) -> asyncio.Event:
 
 # 会话取消代际
 _cancel_generations: dict[str, int] = {}  # {会话ID: 当前代际}
+
+
 def get_cancel_generation(session_id: str) -> int:
     """获取会话当前的取消代际"""
     return _cancel_generations.get(session_id, 0)
+
 
 def bump_cancel_generation(session_id: str) -> None:
     """递增指定会话的代际"""
@@ -42,9 +46,11 @@ def bump_cancel_generation(session_id: str) -> None:
 _active_runs: set[str] = set()  # 正在运行的会话ID集合
 _active_tasks: dict[str, asyncio.Task] = {}  # {会话ID: 图流生产者任务}
 
+
 def register_active_task(session_id: str, task: asyncio.Task) -> None:
     """给指定会话登记图流生产者任务"""
     _active_tasks[session_id] = task
+
 
 def unregister_active_task(session_id: str) -> None:
     """注销指定会话的图流生产者任务"""
@@ -54,9 +60,11 @@ def unregister_active_task(session_id: str) -> None:
 # 会话中未完成轮次计数
 _pending_runs: dict[str, int] = {}  # {会话ID: 未完成轮次数}
 
+
 def register_pending_run(session_id: str) -> None:
     """登记一轮未完成的运行"""
     _pending_runs[session_id] = _pending_runs.get(session_id, 0) + 1
+
 
 def unregister_pending_run(session_id: str) -> None:
     """注销一轮运行"""
@@ -66,9 +74,11 @@ def unregister_pending_run(session_id: str) -> None:
     else:
         _pending_runs[session_id] = count - 1
 
+
 def has_pending_runs(session_id: str) -> bool:
     """是否存在排队中或执行中的轮次"""
     return _pending_runs.get(session_id, 0) > 0
+
 
 def is_session_running(session_id: str) -> bool:
     """检查当前会话是否有正在运行的图流任务"""
@@ -84,6 +94,7 @@ CANCEL_MESSAGE = "[对话已被用户打断]"
 
 class RunCancelledError(Exception):
     """运行时被打断异常"""
+
     def __init__(self, message: str = CANCEL_MESSAGE, streamed_text: str = ""):
         """
         Args:

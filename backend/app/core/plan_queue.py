@@ -1,4 +1,7 @@
 """计划队列"""
+
+from __future__ import annotations
+
 from app.schemas.enums import TodoStatus
 from app.schemas.todos import TodoItem
 
@@ -10,10 +13,7 @@ class PlanQueue:
     @classmethod
     def from_rows(cls, rows) -> PlanQueue:
         """将数据库中的数据重建成计划队列"""
-        items = [
-            TodoItem(id=r.id, title=r.title, status=TodoStatus(r.status), position=r.position)
-            for r in rows
-        ]
+        items = [TodoItem(id=r.id, title=r.title, status=TodoStatus(r.status), position=r.position) for r in rows]
         return cls(items)
 
     def to_list(self) -> list[TodoItem]:
@@ -22,6 +22,4 @@ class PlanQueue:
 
     def get_in_progress_list(self) -> list[TodoItem]:
         """获取当前正在执行的步骤列表"""
-        return [
-            t for t in self.items if t.status == TodoStatus.IN_PROGRESS
-        ]
+        return [t for t in self.items if t.status == TodoStatus.IN_PROGRESS]

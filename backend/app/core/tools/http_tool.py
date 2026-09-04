@@ -1,11 +1,10 @@
 """HTTP 协议工具"""
 
 import httpx
-
 from langchain_core.tools import tool
 
-
 BODY_MAX_LEN = 5000
+
 
 @tool(parse_docstring=True)
 async def http_get(url: str) -> str:

@@ -28,13 +28,15 @@ def _build_middleware(trigger) -> SummarizationMiddleware:
         trigger=trigger,
         keep=("tokens", limits.keep_tokens),  # 保留的消息token数
         token_counter=_middleware_token_counter,
-        trim_tokens_to_summarize=None
+        trim_tokens_to_summarize=None,
     )
+
 
 def get_auto_compact_middleware() -> SummarizationMiddleware:
     """获取自动压缩上下文中间件, 上下文到达阈值自动触发"""
     limits = get_compact_limits()
     return _build_middleware(trigger=("tokens", limits.trigger_tokens))
+
 
 def get_manual_compact_middleware() -> SummarizationMiddleware:
     """获取手动压缩上下文中间件, 只要存在至少一条消息就可以进行压缩"""
@@ -44,14 +46,16 @@ def get_manual_compact_middleware() -> SummarizationMiddleware:
 @dataclass
 class CompactionOutcome:
     """一次成功压缩的细节"""
+
     summary_message: BaseMessage  # 生成的摘要消息
     preserved_messages: list[BaseMessage]  # 原样保留的消息列表
     covered_ids: list[str] = field(default_factory=list)
 
+
 def _split_system_messages(messages: list[BaseMessage]) -> tuple[list[BaseMessage], list[BaseMessage]]:
     """
     抽取出开头连续的系统提示词, 将其分离开来
-    
+
     Returns:
         (开头的系统提示词, 除开开头系统提示词之外的消息列表)
     """
@@ -65,6 +69,7 @@ def _split_system_messages(messages: list[BaseMessage]) -> tuple[list[BaseMessag
             break
     return protected, messages[cut:]
 
+
 def _ensure_ids(messages: list[BaseMessage]) -> None:
     """确保每条消息都有id, 没有的现场创建id"""
     for msg in messages:
@@ -73,8 +78,7 @@ def _ensure_ids(messages: list[BaseMessage]) -> None:
 
 
 async def run_compaction(
-        middleware: SummarizationMiddleware,
-        messages: list[BaseMessage]
+    middleware: SummarizationMiddleware, messages: list[BaseMessage]
 ) -> tuple[list[BaseMessage], CompactionOutcome] | None:
     """使用给定的上下文压缩中间件执行一次压缩"""
     # 剥离开系统提示词防止一起被压缩
@@ -98,12 +102,9 @@ async def run_compaction(
     # 提取摘要覆盖消息
     preserved_ids = {m.id for m in preserved}
     covered_ids = [m.id for m in rest if m.id not in preserved_ids]
-    outcome = CompactionOutcome(
-        summary_message=summaries[0],
-        preserved_messages=preserved,
-        covered_ids=covered_ids
-    )
+    outcome = CompactionOutcome(summary_message=summaries[0], preserved_messages=preserved, covered_ids=covered_ids)
     return protected + new_messages, outcome
+
 
 async def compact_node(state: AgentState) -> dict:
     """上下文压缩节点"""
@@ -123,5 +124,5 @@ async def compact_node(state: AgentState) -> dict:
         "compact_covered_ids": outcome.covered_ids,
         "compact_summary_text": outcome.summary_message.text,
         "compact_before_tokens": before_tokens,
-        "compact_after_tokens": after_tokens
+        "compact_after_tokens": after_tokens,
     }

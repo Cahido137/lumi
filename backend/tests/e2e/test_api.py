@@ -1,16 +1,16 @@
 """E2E测试: HTTP接口链(注册→会话→聊天→审批), 模型用假的, 不起真实服务器"""
+
 import asyncio
 
 import httpx
 import pytest
-from langchain_core.messages import AIMessage
-from sqlalchemy import select
-
 from app.core.graph import builder
 from app.db.models import Approval, ToolExecution
 from app.db.session import SessionLocal
 from app.main import app
 from app.schemas.enums import ExecutionStatus
+from langchain_core.messages import AIMessage
+from sqlalchemy import select
 from tests.fakes import FakePlanner, FakeTool, ScriptedModel, SlowModel
 
 
@@ -97,10 +97,16 @@ async def test_chat_normal_via_http(client, monkeypatch):
 async def test_chat_records_tool_execution(client, monkeypatch):
     """HTTP聊天触发非审批工具, 执行记录落库"""
     tool = FakeTool("web_search", result="3条结果")
-    patch_agent_deps(monkeypatch, ScriptedModel([
-        AIMessage(content="", tool_calls=[{"name": "web_search", "args": {"query": "新闻"}, "id": "c1"}]),
-        AIMessage(content="搜索完成"),
-    ]), tools={"web_search": tool})
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(content="", tool_calls=[{"name": "web_search", "args": {"query": "新闻"}, "id": "c1"}]),
+                AIMessage(content="搜索完成"),
+            ]
+        ),
+        tools={"web_search": tool},
+    )
     data = await register_user(client)
     sid = await create_session(client, data)
     res = await client.post(f"/api/sessions/{sid}/chat", json={"content": "搜新闻"}, headers=auth_header(data))
@@ -113,10 +119,16 @@ async def test_chat_records_tool_execution(client, monkeypatch):
 async def test_approval_flow_via_http(client, monkeypatch):
     """HTTP审批流: 聊天中断→决定批准→恢复执行"""
     tool = FakeTool("run_shell", result="目录列表")
-    patch_agent_deps(monkeypatch, ScriptedModel([
-        AIMessage(content="", tool_calls=[{"name": "run_shell", "args": {"command": "dir"}, "id": "c1"}]),
-        AIMessage(content="执行完毕"),
-    ]), tools={"run_shell": tool})
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(content="", tool_calls=[{"name": "run_shell", "args": {"command": "dir"}, "id": "c1"}]),
+                AIMessage(content="执行完毕"),
+            ]
+        ),
+        tools={"run_shell": tool},
+    )
     data = await register_user(client)
     sid = await create_session(client, data)
     res = await client.post(f"/api/sessions/{sid}/chat", json={"content": "列目录"}, headers=auth_header(data))
@@ -135,10 +147,16 @@ async def test_approval_flow_via_http(client, monkeypatch):
 async def test_approval_reject_via_http(client, monkeypatch):
     """HTTP审批流: 决定拒绝, 工具不执行, 记录rejected"""
     tool = FakeTool("run_shell")
-    patch_agent_deps(monkeypatch, ScriptedModel([
-        AIMessage(content="", tool_calls=[{"name": "run_shell", "args": {"command": "dir"}, "id": "c1"}]),
-        AIMessage(content="好的, 已取消"),
-    ]), tools={"run_shell": tool})
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(content="", tool_calls=[{"name": "run_shell", "args": {"command": "dir"}, "id": "c1"}]),
+                AIMessage(content="好的, 已取消"),
+            ]
+        ),
+        tools={"run_shell": tool},
+    )
     data = await register_user(client)
     sid = await create_session(client, data)
     await client.post(f"/api/sessions/{sid}/chat", json={"content": "列目录"}, headers=auth_header(data))

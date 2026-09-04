@@ -4,8 +4,8 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
-
 READ_TEXT_MAX = 5000
+
 
 @tool(parse_docstring=True)
 async def read_file(path: str, encoding: str = "utf-8") -> str:

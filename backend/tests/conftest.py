@@ -1,4 +1,5 @@
 """全局测试夹具: 测试库隔离与数据清理"""
+
 import os
 from pathlib import Path
 
@@ -13,8 +14,7 @@ from app.core import compat  # noqa: F401
 
 # 必须在 import 任何 app 模块之前设置, 让引擎/检查点/迁移全部指向测试库
 os.environ["DATABASE_URL"] = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://agent:agent123@127.0.0.1:5432/agent_test"
+    "TEST_DATABASE_URL", "postgresql+asyncpg://agent:agent123@127.0.0.1:5432/agent_test"
 )
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -42,7 +42,7 @@ def test_db():
 @pytest.fixture(scope="session")
 async def checkpoint(test_db):
     """初始化测试库里的 langgraph 检查点表, 会话结束关闭连接池"""
-    from app.core.checkpoint import setup_checkpoint, close_checkpoint
+    from app.core.checkpoint import close_checkpoint, setup_checkpoint
 
     await setup_checkpoint()
     yield
@@ -52,18 +52,16 @@ async def checkpoint(test_db):
 @pytest.fixture()
 async def clean_db(test_db, checkpoint):
     """每个测试前清空业务表与进程内全局状态, 保证测试间完全隔离"""
-    from sqlalchemy import text
-
-    from app.core.event_bus import event_bus
     import app.core.session_runner.state as state
+    from app.core.event_bus import event_bus
     from app.db.session import async_engine
+    from sqlalchemy import text
 
     # RESTART IDENTITY 重置自增列, 每个测试的 uid 都从10000开始
     async with async_engine.begin() as conn:
-        await conn.execute(text(
-            "TRUNCATE approvals, tool_executions, todos, messages, sessions, users "
-            "RESTART IDENTITY CASCADE"
-        ))
+        await conn.execute(
+            text("TRUNCATE approvals, tool_executions, todos, messages, sessions, users RESTART IDENTITY CASCADE")
+        )
     # langgraph 的 checkpoint 表不清理, 由 langgraph 自行管理
     state._session_lock.clear()
     state._cancel_events.clear()

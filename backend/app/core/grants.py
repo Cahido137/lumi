@@ -6,12 +6,12 @@ from pydantic import BaseModel, Field
 
 from app.utils.dict import normalize_dict
 
-
 # 各工具的授权身份键
 GRANT_KEY_EXTRACTORS: dict[str, Callable[[dict], dict]] = {
     "run_shell": lambda args: {"command": args.get("command")},
     "write_file": lambda args: {"path": args.get("path")},
 }
+
 
 def extract_grant_key(tool_name: str, args: dict | None) -> str:
     """提取工具入参中用于授权比对的身份键"""
@@ -23,8 +23,10 @@ def extract_grant_key(tool_name: str, args: dict | None) -> str:
         payload = args or {}
     return normalize_dict(payload)
 
+
 class Grants(BaseModel):
     """工具授权领域类"""
+
     tool: list[str] = Field(default_factory=list, description="已整体授权的工具名列表")
     command: dict[str, list[str]] = Field(default_factory=dict, description="已授权工具命令")
 

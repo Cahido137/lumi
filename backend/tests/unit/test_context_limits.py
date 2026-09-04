@@ -2,13 +2,12 @@
 
 from types import SimpleNamespace
 
-import pytest
-
 import app.core.context_limits as context_limits
+import pytest
 from app.core.context_limits import (
     detect_model_max_tokens,
-    get_model_max_context,
     get_compact_limits,
+    get_model_max_context,
 )
 
 
@@ -24,17 +23,22 @@ def _clear_limits_cache():
 
 def _patch_settings(monkeypatch, *, max_tokens=None, default=64000, llm_model="some-unknown-model"):
     """把配置单例替换成测试替身, 避免读到真实.env影响断言"""
-    monkeypatch.setattr(context_limits, "get_compactsettings", lambda: SimpleNamespace(
-        compact_model_max_tokens=max_tokens,
-        compact_default_max_tokens=default,
-        compact_trigger_fraction=0.75,
-        compact_warn_fraction=0.6,
-        compact_keep_fraction=0.3,
-    ))
+    monkeypatch.setattr(
+        context_limits,
+        "get_compactsettings",
+        lambda: SimpleNamespace(
+            compact_model_max_tokens=max_tokens,
+            compact_default_max_tokens=default,
+            compact_trigger_fraction=0.75,
+            compact_warn_fraction=0.6,
+            compact_keep_fraction=0.3,
+        ),
+    )
     monkeypatch.setattr(context_limits, "get_llmsettings", lambda: SimpleNamespace(llm_model=llm_model))
 
 
 # ---------- detect_model_max_tokens: 纯函数, 直接断言 ----------
+
 
 def test_detect_empty_name_returns_none():
     """空模型名无法识别"""
@@ -76,6 +80,7 @@ def test_detect_unknown_returns_none():
 
 # ---------- get_model_max_context: 三级优先级 ----------
 
+
 def test_explicit_max_tokens_wins(monkeypatch):
     """配置文件手动指定最大上下文时优先生效, 不再探测模型名"""
     _patch_settings(monkeypatch, max_tokens=100_000, llm_model="gpt-4o")
@@ -95,6 +100,7 @@ def test_fallback_to_default(monkeypatch):
 
 
 # ---------- get_compact_limits: 比例换算成绝对阈值 ----------
+
 
 def test_compact_limits_fractions_to_tokens(monkeypatch):
     """比例配置按最大上下文换算成绝对阈值"""

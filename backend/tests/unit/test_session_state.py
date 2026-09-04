@@ -2,21 +2,20 @@
 
 import asyncio
 
-import pytest
-
 import app.core.session_runner.state as state
-from app.core.session_runner.state import(
-    get_session_lock,
+import pytest
+from app.core.session_runner.state import (
+    bump_cancel_generation,
     get_cancel_event,
     get_cancel_generation,
-    bump_cancel_generation,
-    register_pending_run,
-    unregister_pending_run,
+    get_session_lock,
     has_pending_runs,
+    is_session_running,
     register_active_task,
-    unregister_active_task,
+    register_pending_run,
     request_cancel_session,
-    is_session_running
+    unregister_active_task,
+    unregister_pending_run,
 )
 
 
@@ -31,15 +30,18 @@ def _clean_session_state():
     state._active_tasks.clear()
     state._pending_runs.clear()
 
+
 def test_session_lock_reused_per_session():
     """测试同一个会话获取的是同一个锁对象而不同会话获取不同锁对象"""
     assert get_session_lock("s1") is get_session_lock("s1")
     assert get_session_lock("s1") is not get_session_lock("s2")
 
+
 def test_cancel_event_reused_per_session():
     """测试同一个会话的取消事件是同一个对象"""
     assert get_cancel_event("s1") is get_cancel_event("s1")
     assert get_cancel_event("s1") is not get_cancel_event("s2")
+
 
 def test_cancel_generation_bump():
     """取消代际递增"""
@@ -91,6 +93,7 @@ def test_request_cancel_noop_when_idle():
     """完全空闲的会话: 返回False, 没有可取消的东西"""
     assert request_cancel_session("i1") is False
 
+
 def test_is_session_running_reflects_active_runs():
     """运行状态判断与活动运行集合同步"""
     assert is_session_running("r1") is False
@@ -98,6 +101,7 @@ def test_is_session_running_reflects_active_runs():
     assert is_session_running("r1") is True
     state._active_runs.discard("r1")
     assert is_session_running("r1") is False
+
 
 def test_is_session_running_isolated_per_session():
     """一个会话运行中不影响其他会话的判断"""

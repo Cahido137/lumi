@@ -6,16 +6,16 @@ from app.crud import todos as todos_crud
 from app.db.session import SessionLocal
 from app.schemas.enums import TodoStatus
 
-
 TODO_DONE_TOOL = "mark_todo_done"
 TODO_START_TOOL = "mark_todo_start"
 TODO_MARKER_TOOLS = {TODO_START_TOOL, TODO_DONE_TOOL}
+
 
 @tool(parse_docstring=True)
 async def mark_todo_done(todo_id: str) -> str:
     """
     将一个计划todo步骤标记为已完成。在完成某个todo步骤后必须调用此工具。
-    
+
     Args:
         todo_id: 计划todo的id, 取自计划列表中每个todo自带的id
 
@@ -29,6 +29,7 @@ async def mark_todo_done(todo_id: str) -> str:
         await todos_crud.update_todo_status(db, todo_id, TodoStatus.DONE)  # 查询到了则标记为已完成
         await db.commit()
         return f"已标记完成的步骤: {todo.title}"
+
 
 @tool(parse_docstring=True)
 async def mark_todo_start(todo_id: str) -> str:

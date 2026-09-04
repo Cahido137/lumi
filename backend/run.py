@@ -1,6 +1,5 @@
 import uvicorn
 
-
 if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",
@@ -8,5 +7,5 @@ if __name__ == "__main__":
         port=8000,
         reload=False,
         log_config=None,
-        loop="app.core.compat:selector_loop_factory"
+        loop="app.core.compat:selector_loop_factory",
     )

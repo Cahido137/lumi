@@ -3,20 +3,19 @@
 from types import SimpleNamespace
 from uuid import uuid4
 
+import app.routers.context as context_router
 import httpx
 import pytest
-from langchain_core.messages import HumanMessage
-
-import app.routers.context as context_router
 from app.core.prompts import get_system_messages
 from app.crud import messages as messages_crud
 from app.crud import sessions as sessions_crud
 from app.db.session import SessionLocal
 from app.main import app
 from app.schemas.enums import MessageRole
-
+from langchain_core.messages import HumanMessage
 
 # ---------- 测试工具 ----------
+
 
 @pytest.fixture()
 async def client():
@@ -56,11 +55,15 @@ async def insert_messages(session_id, count=4) -> list[str]:
 
 def _patch_limits(monkeypatch):
     """替换路由模块内的阈值解析, 避免读真实配置, 数值可断言"""
-    monkeypatch.setattr(context_router, "get_compact_limits", lambda: SimpleNamespace(
-        max_context_tokens=100_000,
-        warn_tokens=60_000,
-        trigger_tokens=75_000,
-    ))
+    monkeypatch.setattr(
+        context_router,
+        "get_compact_limits",
+        lambda: SimpleNamespace(
+            max_context_tokens=100_000,
+            warn_tokens=60_000,
+            trigger_tokens=75_000,
+        ),
+    )
 
 
 class _FakeNoopMiddleware:
@@ -71,6 +74,7 @@ class _FakeNoopMiddleware:
 
 
 # ---------- GET /context/usage ----------
+
 
 async def test_usage_requires_auth(client):
     """未登录查询用量返回401"""
@@ -125,6 +129,7 @@ async def test_usage_grows_with_history(client, monkeypatch):
 
 # ---------- POST /context/compact 守卫分支 ----------
 
+
 async def test_compact_rejects_running_session(client, monkeypatch):
     """会话正在运行时手动压缩直接409"""
     data = await register_user(client)
@@ -150,6 +155,7 @@ async def test_compact_empty_session_returns_zero(client, monkeypatch):
 
 
 # ---------- POST /context/compact 压缩主流程 ----------
+
 
 async def test_compact_success_persists_summary(client, monkeypatch):
     """压缩成功: 摘要与边界落库, 原消息不删除, 用量查询反映已压缩状态"""

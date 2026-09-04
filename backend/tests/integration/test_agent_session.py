@@ -1,10 +1,8 @@
 """集成测试: 真实测试库跑会话运行器, 模型/工具用假的"""
+
 import asyncio
 
 import pytest
-from langchain_core.messages import AIMessage
-from sqlalchemy import select
-
 from app.core.graph import builder
 from app.core.session_runner import (
     resume_agent_session,
@@ -20,6 +18,8 @@ from app.db.models import Approval, Message, ToolExecution
 from app.db.session import SessionLocal
 from app.schemas.enums import ApprovalStatus, ExecutionStatus, MessageRole
 from app.schemas.todos import TodoItem, TodoStatus
+from langchain_core.messages import AIMessage
+from sqlalchemy import select
 from tests.fakes import FakePlanner, FakeTool, ScriptedModel, SlowModel
 
 
@@ -50,8 +50,7 @@ async def list_messages(session_id):
     """按时间正序取会话消息"""
     async with SessionLocal() as db:
         result = await db.execute(
-            select(Message).where(Message.session_id == session_id)
-            .order_by(Message.created_at, Message.id)
+            select(Message).where(Message.session_id == session_id).order_by(Message.created_at, Message.id)
         )
         return list(result.scalars())
 
@@ -59,18 +58,14 @@ async def list_messages(session_id):
 async def get_executions(session_id):
     """取会话全部工具执行记录"""
     async with SessionLocal() as db:
-        result = await db.execute(
-            select(ToolExecution).where(ToolExecution.session_id == session_id)
-        )
+        result = await db.execute(select(ToolExecution).where(ToolExecution.session_id == session_id))
         return list(result.scalars())
 
 
 async def get_pending_approval_id(session_id):
     """取会话的待审批单ID"""
     async with SessionLocal() as db:
-        return await db.scalar(
-            select(Approval.id).where(Approval.session_id == session_id)
-        )
+        return await db.scalar(select(Approval.id).where(Approval.session_id == session_id))
 
 
 async def test_normal_chat_persists_messages(monkeypatch):
@@ -87,10 +82,16 @@ async def test_normal_chat_persists_messages(monkeypatch):
 async def test_non_approval_tool_recorded(monkeypatch):
     """场景2: 非审批工具执行后落库, 入参与状态齐全"""
     tool = FakeTool("web_search", result="3条结果")
-    patch_agent_deps(monkeypatch, ScriptedModel([
-        AIMessage(content="", tool_calls=[tool_call("web_search", {"query": "新闻"}, "c1")]),
-        AIMessage(content="搜索完成"),
-    ]), tools={"web_search": tool})
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(content="", tool_calls=[tool_call("web_search", {"query": "新闻"}, "c1")]),
+                AIMessage(content="搜索完成"),
+            ]
+        ),
+        tools={"web_search": tool},
+    )
     sid = await create_user_and_session()
     reply = await run_agent_session(sid, "搜新闻")
     assert reply.content == "搜索完成"
@@ -105,10 +106,16 @@ async def test_non_approval_tool_recorded(monkeypatch):
 async def test_approval_flow_approve(monkeypatch):
     """场景3: 审批中断->批准->恢复执行, 记录状态完整流转"""
     tool = FakeTool("run_shell", result="目录列表")
-    patch_agent_deps(monkeypatch, ScriptedModel([
-        AIMessage(content="", tool_calls=[tool_call("run_shell", {"command": "dir"}, "c1")]),
-        AIMessage(content="执行完毕"),
-    ]), tools={"run_shell": tool})
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(content="", tool_calls=[tool_call("run_shell", {"command": "dir"}, "c1")]),
+                AIMessage(content="执行完毕"),
+            ]
+        ),
+        tools={"run_shell": tool},
+    )
     sid = await create_user_and_session()
     assert await run_agent_session(sid, "列目录") is None  # 中断等待审批
     rows = await get_executions(sid)
@@ -121,10 +128,16 @@ async def test_approval_flow_approve(monkeypatch):
 async def test_approval_flow_reject(monkeypatch):
     """场景4: 审批拒绝, 工具不执行, 记录标记rejected"""
     tool = FakeTool("run_shell")
-    patch_agent_deps(monkeypatch, ScriptedModel([
-        AIMessage(content="", tool_calls=[tool_call("run_shell", {"command": "dir"}, "c1")]),
-        AIMessage(content="好的, 已取消"),
-    ]), tools={"run_shell": tool})
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(content="", tool_calls=[tool_call("run_shell", {"command": "dir"}, "c1")]),
+                AIMessage(content="好的, 已取消"),
+            ]
+        ),
+        tools={"run_shell": tool},
+    )
     sid = await create_user_and_session()
     await run_agent_session(sid, "列目录")
     reply = await resume_agent_session(await get_pending_approval_id(sid), ApprovalStatus.REJECTED)
@@ -137,13 +150,22 @@ async def test_multi_tool_message_inputs_recorded(monkeypatch):
     """场景5: 回归-同消息审批+非审批工具, 恢复后两者入参都完整落库"""
     shell = FakeTool("run_shell")
     search = FakeTool("web_search")
-    patch_agent_deps(monkeypatch, ScriptedModel([
-        AIMessage(content="", tool_calls=[
-            tool_call("run_shell", {"command": "dir"}, "c1"),
-            tool_call("web_search", {"query": "新闻"}, "c2"),
-        ]),
-        AIMessage(content="完成"),
-    ]), tools={"run_shell": shell, "web_search": search})
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        tool_call("run_shell", {"command": "dir"}, "c1"),
+                        tool_call("web_search", {"query": "新闻"}, "c2"),
+                    ],
+                ),
+                AIMessage(content="完成"),
+            ]
+        ),
+        tools={"run_shell": shell, "web_search": search},
+    )
     sid = await create_user_and_session()
     await run_agent_session(sid, "列目录并搜新闻")
     await resume_agent_session(await get_pending_approval_id(sid), ApprovalStatus.APPROVED)
@@ -188,12 +210,18 @@ async def test_cancel_queued_run_aborts(monkeypatch):
 async def test_retry_cleans_and_reruns(monkeypatch):
     """场景7: 重试清理旧回复与工具记录后重跑, 中间工具消息随链路落库"""
     tool = FakeTool("web_search", result="结果")
-    patch_agent_deps(monkeypatch, ScriptedModel([
-        AIMessage(content="", tool_calls=[tool_call("web_search", {"query": "旧问题"}, "c1")]),
-        AIMessage(content="旧回答"),
-        AIMessage(content="", tool_calls=[tool_call("web_search", {"query": "新问题"}, "c2")]),
-        AIMessage(content="新回答"),
-    ]), tools={"web_search": tool})
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(content="", tool_calls=[tool_call("web_search", {"query": "旧问题"}, "c1")]),
+                AIMessage(content="旧回答"),
+                AIMessage(content="", tool_calls=[tool_call("web_search", {"query": "新问题"}, "c2")]),
+                AIMessage(content="新回答"),
+            ]
+        ),
+        tools={"web_search": tool},
+    )
     sid = await create_user_and_session()
     first = await run_agent_session(sid, "旧问题")
     assert first.content == "旧回答"

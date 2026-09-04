@@ -8,12 +8,11 @@ import jwt as pyjwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketException
 
 from app.core.event_bus import event_bus
-from app.core.session_runner import run_agent_session, request_cancel_session
+from app.core.session_runner import request_cancel_session, run_agent_session
 from app.crud import sessions as sessions_crud
 from app.crud import users as users_crud
 from app.db.session import SessionLocal
 from app.utils.security import decode_access_token
-
 
 router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
 
@@ -48,7 +47,6 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
             await websocket.close(code=4404)  # 会话不存在或无权限
             return
 
-
     # 握手连接
     await websocket.accept()
     logger.info("WebSocket建立连接 (session_id=%s)", sid)
@@ -81,9 +79,9 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
             run_task.add_done_callback(_on_run_done)
     except WebSocketDisconnect:
         logger.info("WebSocket连接断开 (session_id=%s)", sid)
-    except Exception:
+    except Exception as e:
         logger.exception("WebSocket处理异常 (session_id=%s)", sid)
-        raise WebSocketException(code=1011, reason="服务器内部错误")
+        raise WebSocketException(code=1011, reason="服务器内部错误") from e
     finally:
         request_cancel_session(sid)
         send_task.cancel()

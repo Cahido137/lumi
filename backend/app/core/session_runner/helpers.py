@@ -1,29 +1,29 @@
 """会话运行器辅助函数"""
 
-from uuid import uuid4
 from collections.abc import Sequence
+from uuid import uuid4
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.event_bus import event_bus
-from app.core.events import AgentEvent
 from app.core.event_response import PlanUpdatedResponse
+from app.core.events import AgentEvent
 from app.core.plan_queue import PlanQueue
 from app.core.session_runner.context import RunContext
-from app.crud import todos as todos_crud
-from app.crud import sessions as sessions_crud
 from app.crud import messages as messages_crud
-from app.schemas.enums import EventType, MessageRole
+from app.crud import sessions as sessions_crud
+from app.crud import todos as todos_crud
 from app.db.models import Message
-
+from app.schemas.enums import EventType, MessageRole
 
 # 数据库消息角色映射
 _ROLE_MESSAGE: dict[str, type[BaseMessage]] = {
     MessageRole.USER.value: HumanMessage,
     MessageRole.ASSISTANT.value: AIMessage,
-    MessageRole.SYSTEM.value: SystemMessage
+    MessageRole.SYSTEM.value: SystemMessage,
 }
+
 
 def _sanitize_dangling_tool_calls(messages: list[BaseMessage]) -> list[BaseMessage]:
     """清除悬空工具调用, 将未执行的工具调用清除"""
@@ -35,7 +35,7 @@ def _sanitize_dangling_tool_calls(messages: list[BaseMessage]) -> list[BaseMessa
             declared = {tc["id"] for tc in msg.tool_calls}  # AIMessage声明的需要的工具调用
             answered: set[str] = set()  # 记录ToolMessage工具回复
             # 检查这条AIMessage之后，下一条AIMessage之前是否有回复的ToolMessage
-            for later in messages[i + 1:]:
+            for later in messages[i + 1 :]:
                 # 到下一条AIMessage了
                 if isinstance(later, AIMessage):
                     break
@@ -67,35 +67,30 @@ def _sanitize_dangling_tool_calls(messages: list[BaseMessage]) -> list[BaseMessa
             result.append(msg)
     return result
 
+
 def to_langchain_messages(rows: Sequence[Message]) -> list[BaseMessage]:
     """将数据库中的消息行转化为langchain风格消息列表"""
     messages: list[BaseMessage] = []
     for row in rows:
         # 单独处理ToolMessage
         if row.role == MessageRole.TOOL.value:
-            messages.append(ToolMessage(
-                content=row.content,
-                tool_call_id=row.tool_call_id or "",
-                name=row.tool_name,
-                id=row.id
-            ))
+            messages.append(
+                ToolMessage(content=row.content, tool_call_id=row.tool_call_id or "", name=row.tool_name, id=row.id)
+            )
             continue
         factory = _ROLE_MESSAGE.get(row.role)
         # 不支持的消息类型
         if factory is None:
             raise ValueError("不支持的消息类型")
         if factory is AIMessage:
-            kwargs = {
-                "content": row.content,
-                "id": row.id,
-                "usage_metadata": row.usage
-            }
+            kwargs = {"content": row.content, "id": row.id, "usage_metadata": row.usage}
             if row.tool_calls:
                 kwargs["tool_calls"] = row.tool_calls
             messages.append(AIMessage(**kwargs))
         else:
             messages.append(factory(content=row.content, id=row.id))
     return _sanitize_dangling_tool_calls(messages)
+
 
 async def rebuild_history(db: AsyncSession, session_id: str, exclude_id: str | None = None) -> list[BaseMessage]:
     """从数据库重建本次图运行的历史消息"""
@@ -114,23 +109,23 @@ async def rebuild_history(db: AsyncSession, session_id: str, exclude_id: str | N
         rows = [row for row in rows if row.id != exclude_id]
     return to_langchain_messages(rows)
 
+
 def build_config(session_id: str) -> RunContext:
     """生成运行config与thread_id"""
     thread_id = f"{session_id}:{uuid4()}"  # 格式为会话ID+一个uuid
-    return RunContext(
-        config={"configurable": {"thread_id": thread_id}},
-        thread_id=thread_id
-    )
+    return RunContext(config={"configurable": {"thread_id": thread_id}}, thread_id=thread_id)
+
 
 async def load_plan_queue(db: AsyncSession, session_id: str) -> PlanQueue:
     """从todos表重载计划队列"""
     rows = await todos_crud.list_todos(db, session_id)
     return PlanQueue.from_rows(rows)
 
+
 async def publish_plan(session_id: str, plan_queue: PlanQueue) -> None:
     """发布计划更新事件"""
-    await event_bus.publish(AgentEvent(
-        eventType=EventType.PLAN_UPDATED,
-        sessionId=session_id,
-        data=PlanUpdatedResponse(todos=plan_queue.to_list())
-    ))
+    await event_bus.publish(
+        AgentEvent(
+            eventType=EventType.PLAN_UPDATED, sessionId=session_id, data=PlanUpdatedResponse(todos=plan_queue.to_list())
+        )
+    )

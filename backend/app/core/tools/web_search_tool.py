@@ -3,22 +3,22 @@
 import asyncio
 
 import httpx
-
 from langchain_core.tools import tool
 
 from app.config import get_web_search_settings
-
 
 RESULTS_MAX_LEN = 5000
 DEFAULT_MAX_RESULTS = 5
 MAX_RESULTS_HARD_CAP = 20
 # 分档超时: 连接 10s, 读取放宽到 25s
 TIMEOUT = httpx.Timeout(connect=10.0, read=25.0, write=10.0, pool=5.0)
-MAX_RETRIES = 2          # 超时/瞬时服务端错误最多重试 2 次
-RETRY_BACKOFF = 1.5      # 重试退避基数(秒)
+MAX_RETRIES = 2  # 超时/瞬时服务端错误最多重试 2 次
+RETRY_BACKOFF = 1.5  # 重试退避基数(秒)
 
 
-async def _search_with_tavily(client: httpx.AsyncClient, url: str, api_key: str, query: str, max_results: int) -> list[dict]:
+async def _search_with_tavily(
+    client: httpx.AsyncClient, url: str, api_key: str, query: str, max_results: int
+) -> list[dict]:
     """Tavily 搜索适配"""
     res = await client.post(
         url,
@@ -33,7 +33,9 @@ async def _search_with_tavily(client: httpx.AsyncClient, url: str, api_key: str,
     return res.json().get("results") or []
 
 
-async def _request_with_retry(client: httpx.AsyncClient, url: str, api_key: str, query: str, max_results: int) -> list[dict]:
+async def _request_with_retry(
+    client: httpx.AsyncClient, url: str, api_key: str, query: str, max_results: int
+) -> list[dict]:
     """带重试的搜索请求: 超时与瞬时服务端错误(429/5xx)退避重试, 其余错误直接抛"""
     last_err = None
     for attempt in range(MAX_RETRIES + 1):
@@ -77,8 +79,7 @@ async def web_search(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> str:
             provider = settings.web_search_provider
             if provider == "tavily":
                 results = await _request_with_retry(
-                    client, settings.web_search_base_url,
-                    settings.web_search_api_key, query, max_results
+                    client, settings.web_search_base_url, settings.web_search_api_key, query, max_results
                 )
             else:
                 raise RuntimeError(f"不支持的搜索服务商: {provider}")
@@ -102,8 +103,6 @@ async def web_search(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> str:
         # 超时异常
         raise RuntimeError("搜索请求超时, 已重试仍失败, 请稍后重试") from None
     except httpx.HTTPStatusError as e:
-        raise RuntimeError(
-            f"搜索请求失败(状态码{e.response.status_code}): {str(e.response.text)[:200]}"
-        ) from e
+        raise RuntimeError(f"搜索请求失败(状态码{e.response.status_code}): {str(e.response.text)[:200]}") from e
     except Exception as e:
         raise RuntimeError(f"搜索失败: {e}") from e

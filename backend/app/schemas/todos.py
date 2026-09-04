@@ -5,6 +5,7 @@ from app.schemas.enums import TodoStatus
 
 class TodoItem(BaseModel):
     """一个计划步骤"""
+
     id: str = Field(..., description="计划步骤唯一ID")
     title: str = Field(..., description="步骤描述")
     status: TodoStatus = Field(TodoStatus.PENDING, description="步骤状态")

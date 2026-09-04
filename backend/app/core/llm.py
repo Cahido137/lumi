@@ -5,8 +5,7 @@ from functools import lru_cache
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from app.config import get_llmsettings, LLMSettings
-
+from app.config import LLMSettings, get_llmsettings
 
 PROVIDER_TUPLE = (
     ("deepseek", "deepseek"),
@@ -14,10 +13,11 @@ PROVIDER_TUPLE = (
     ("dashscope", "qwen"),
     ("moonshot", "kimi"),
     ("ollama", "ollama"),
-    ("anthropic", "anthropic")
+    ("anthropic", "anthropic"),
 )
 
 OPENAI_COMPATIBLE = {"deepseek", "zhipu", "qwen", "kimi", "ollama"}
+
 
 def detect_provider(base_url: str) -> str:
     """根据 base_url 猜测供应商"""
@@ -29,6 +29,7 @@ def detect_provider(base_url: str) -> str:
             return provider
     # 默认识别为 openai
     return "openai"
+
 
 def _resolve_provider(provider: str) -> str:
     """将一部分兼容openai的国产厂商视作openai"""
@@ -58,7 +59,7 @@ def create_llm(**overrides) -> BaseChatModel:
         "max_tokens": settings.llm_max_tokens,
         "timeout": settings.llm_timeout,
         "max_retries": settings.llm_max_retries,
-        "extra_body": None  # 提供商特有参数
+        "extra_body": None,  # 提供商特有参数
     }
     # 检查参数格式
     unknown = set(overrides) - set(params)
@@ -80,7 +81,7 @@ def create_llm(**overrides) -> BaseChatModel:
         max_tokens=params["max_tokens"],
         timeout=params["timeout"],
         max_retries=params["max_retries"],
-        extra_body=params["extra_body"]
+        extra_body=params["extra_body"],
     )
 
     # 只有兼容openai或anthropic借口才支持流失消息返回token
@@ -95,6 +96,7 @@ def get_chat_model() -> BaseChatModel:
     """获得大模型实例"""
     return create_llm()
 
+
 @lru_cache
 def create_planner_llm() -> BaseChatModel:
     """
@@ -103,7 +105,7 @@ def create_planner_llm() -> BaseChatModel:
     """
     settings = get_llmsettings()
     provider = settings.llm_provider or detect_provider(settings.llm_base_url)
-    is_deepseek = (provider == "deepseek" or "deepseek" in settings.llm_base_url.lower())
+    is_deepseek = provider == "deepseek" or "deepseek" in settings.llm_base_url.lower()
     # 如果是 deepseek 则关闭思考模式
     if is_deepseek:
         return create_llm(extra_body={"thinking": {"type": "disabled"}})
@@ -131,6 +133,7 @@ async def ping_chat_model(llm: BaseChatModel | None = None, timeout: float = 15.
         (是否联通, 详细信息)
     """
     import asyncio
+
     llm = llm or get_chat_model()
     try:
         # 向大模型发送消息测试连通性

@@ -5,42 +5,37 @@ import logging
 from functools import partial
 
 from app.core.checkpoint import get_checkpointer
-from app.core.event_bus import event_bus
-from app.core.events import AgentEvent
-from app.core.event_response import (
-    TokenResponse,
-    ToolStartedResponse,
-    ToolFinishedResponse,
-    ContextWarningResponse,
-    ContextCompactedResponse
-)
 from app.core.context_limits import get_compact_limits
-from app.schemas.usage import UsageMetadata
+from app.core.event_bus import event_bus
+from app.core.event_response import (
+    ContextCompactedResponse,
+    ContextWarningResponse,
+    TokenResponse,
+    ToolFinishedResponse,
+    ToolStartedResponse,
+)
+from app.core.events import AgentEvent
 from app.core.graph.builder import build_agent_graph
 from app.core.graph.schemas import ApprovalInterrupt
 from app.core.plan_queue import PlanQueue
 from app.core.session_runner.context import StreamResult
 from app.core.session_runner.helpers import load_plan_queue, publish_plan
-from app.core.session_runner.state import (
-    RunCancelledError,
-    _CANCELLED,
-    register_active_task,
-    unregister_active_task
-)
+from app.core.session_runner.state import _CANCELLED, RunCancelledError, register_active_task, unregister_active_task
 from app.core.tools.todo_tool import TODO_MARKER_TOOLS
+from app.crud import approvals as approvals_crud
+from app.crud import messages as messages_crud
+from app.crud import sessions as sessions_crud
 from app.crud import todos as todos_crud
 from app.crud import tool_executions as tool_executions_crud
-from app.crud import approvals as approvals_crud
-from app.crud import sessions as sessions_crud
-from app.crud import messages as messages_crud
-from app.schemas.enums import EventType, TodoStatus, ExecutionStatus, ApprovalStatus, MessageRole
+from app.schemas.enums import ApprovalStatus, EventType, ExecutionStatus, MessageRole, TodoStatus
 from app.schemas.todos import TodoItem
-
+from app.schemas.usage import UsageMetadata
 
 logger = logging.getLogger(__name__)
 
 # 图单例
 _agent_graph = None
+
 
 def get_agent_graph():
     """获取图单例"""
@@ -49,15 +44,13 @@ def get_agent_graph():
         _agent_graph = build_agent_graph(get_checkpointer())
     return _agent_graph
 
+
 async def _produce_stream(graph_input, config, chunks: asyncio.Queue) -> None:
     """图流生产者"""
-    async for chunk in get_agent_graph().astream(
-        graph_input,
-        config=config,
-        stream_mode=["updates", "messages"]
-    ):
+    async for chunk in get_agent_graph().astream(graph_input, config=config, stream_mode=["updates", "messages"]):
         await chunks.put(chunk)  # 生产者将 chunk 存入队列
     await chunks.put(None)
+
 
 def _on_producer_done(chunks: asyncio.Queue, task: asyncio.Task) -> None:
     """生产者结束回调"""
@@ -69,6 +62,7 @@ def _on_producer_done(chunks: asyncio.Queue, task: asyncio.Task) -> None:
     if exc is not None:
         chunks.put_nowait(exc)
 
+
 def _resolve_execution_status(rejected: bool, msg_status: str | None) -> ExecutionStatus:
     """由审批单状态和工具消息状态决定执行记录状态"""
     if rejected:
@@ -77,7 +71,10 @@ def _resolve_execution_status(rejected: bool, msg_status: str | None) -> Executi
         return ExecutionStatus.ERROR
     return ExecutionStatus.SUCCESS
 
-async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input, config, cancel_event: asyncio.Event | None = None) -> StreamResult:
+
+async def process_stream(
+    db, session_id: str, plan_queue: PlanQueue, graph_input, config, cancel_event: asyncio.Event | None = None
+) -> StreamResult:
     """图运行与事件处理流"""
     # 以流式方式运行图
     final_reply = ""
@@ -119,11 +116,9 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                 if node == "model_node" and isinstance(content, str) and content:
                     streamed_parts.append(content)  # 记录已经生成的流式文本
                     # 发布流式输出事件
-                    await event_bus.publish(AgentEvent(
-                        eventType=EventType.TOKEN,
-                        sessionId=session_id,
-                        data=TokenResponse(token=content)
-                    ))
+                    await event_bus.publish(
+                        AgentEvent(eventType=EventType.TOKEN, sessionId=session_id, data=TokenResponse(token=content))
+                    )
                 continue
 
             # 检查是否有中断
@@ -146,15 +141,17 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                     else:
                         logger.warning("压缩覆盖的消息不存在于数据库, 跳过摘要落库")
                     context_warned = False  # 压缩后重置上下文警告
-                    await event_bus.publish(AgentEvent(
-                        eventType=EventType.CONTEXT_COMPACTED,
-                        sessionId=session_id,
-                        data=ContextCompactedResponse(
-                            before_tokens=compact_update.get("compact_before_tokens") or 0,
-                            after_tokens=compact_update.get("compact_after_tokens") or 0,
-                            summarized_message_count=len(covered_ids)
+                    await event_bus.publish(
+                        AgentEvent(
+                            eventType=EventType.CONTEXT_COMPACTED,
+                            sessionId=session_id,
+                            data=ContextCompactedResponse(
+                                before_tokens=compact_update.get("compact_before_tokens") or 0,
+                                after_tokens=compact_update.get("compact_after_tokens") or 0,
+                                summarized_message_count=len(covered_ids),
+                            ),
                         )
-                    ))
+                    )
 
             # 找到计划器节点输出
             if "planner_node" in payload:
@@ -162,17 +159,14 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                 # 如果规划期返回空，则跳过替换
                 if "todos" not in planner_output:
                     continue
-                items = [
-                    TodoItem.model_validate(t)
-                    for t in payload["planner_node"]["todos"]
-                ]
+                items = [TodoItem.model_validate(t) for t in payload["planner_node"]["todos"]]
                 plan_queue.items = sorted(items, key=lambda t: t.position)
                 await todos_crud.replace_todos(db, session_id, plan_queue.to_list())
                 await db.commit()
                 await sessions_crud.set_has_pending_task(db, session_id, False)  # 作废旧计划，清除标记
                 await db.commit()
                 await publish_plan(session_id, plan_queue)
-                    
+
             # 找到模型节点输出
             if "model_node" in payload:
                 msg = payload["model_node"]["messages"][-1]  # 拿到最近一条消息
@@ -184,27 +178,26 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                         context_warned = True  # 标记已触发警告
                         fraction = usage.input_tokens / limits.max_context_tokens  # 计算目前已占有上下文的比例
                         # 发布上下文警告
-                        await event_bus.publish(AgentEvent(
-                            eventType=EventType.CONTEXT_WARNING,
-                            sessionId=session_id,
-                            data=ContextWarningResponse(
-                                used_tokens=usage.input_tokens,
-                                max_context_tokens=limits.max_context_tokens,
-                                fraction=round(fraction, 4),
-                                message=f"上下文使用率达到 {round(fraction * 100)}% , 即将自动压缩上下文"
+                        await event_bus.publish(
+                            AgentEvent(
+                                eventType=EventType.CONTEXT_WARNING,
+                                sessionId=session_id,
+                                data=ContextWarningResponse(
+                                    used_tokens=usage.input_tokens,
+                                    max_context_tokens=limits.max_context_tokens,
+                                    fraction=round(fraction, 4),
+                                    message=f"上下文使用率达到 {round(fraction * 100)}% , 即将自动压缩上下文",
+                                ),
                             )
-                        ))
+                        )
                 if msg.tool_calls:
                     # 将消息落库
                     normalized_calls = [
-                        {"name": tc["name"], "args": tc["args"], "id": tc["id"]}
-                        for tc in msg.tool_calls
+                        {"name": tc["name"], "args": tc["args"], "id": tc["id"]} for tc in msg.tool_calls
                     ]
                     content = msg.content if isinstance(msg.content, str) else str(msg.content)
                     await messages_crud.add_message(
-                        db, session_id, MessageRole.ASSISTANT, content,
-                        tool_calls=normalized_calls,
-                        usage=usage
+                        db, session_id, MessageRole.ASSISTANT, content, tool_calls=normalized_calls, usage=usage
                     )
                     await db.commit()
 
@@ -213,14 +206,13 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                         if tool["name"] in TODO_MARKER_TOOLS:
                             continue
                         # 发布工具开始执行事件
-                        await event_bus.publish(AgentEvent(
-                            eventType=EventType.TOOL_STARTED,
-                            sessionId=session_id,
-                            data=ToolStartedResponse(
-                                tool=tool["name"],
-                                tool_input=tool["args"] or {}
+                        await event_bus.publish(
+                            AgentEvent(
+                                eventType=EventType.TOOL_STARTED,
+                                sessionId=session_id,
+                                data=ToolStartedResponse(tool=tool["name"], tool_input=tool["args"] or {}),
                             )
-                        ))
+                        )
                 else:
                     final_reply = msg.content
 
@@ -232,9 +224,7 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                     # 先提取出消息块，并确保是字符串
                     content = tm.content if isinstance(tm.content, str) else str(tm.content)
                     await messages_crud.add_message(
-                        db, session_id, MessageRole.TOOL, content,
-                        tool_call_id=tm.tool_call_id,
-                        tool_name=tm.name
+                        db, session_id, MessageRole.TOOL, content, tool_call_id=tm.tool_call_id, tool_name=tm.name
                     )
                     await db.commit()
 
@@ -244,7 +234,9 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                         await publish_plan(session_id, plan_queue)
                         continue
 
-                    pending = await tool_executions_crud.get_pending_execution_by_call_id(db, session_id, tm.tool_call_id)
+                    pending = await tool_executions_crud.get_pending_execution_by_call_id(
+                        db, session_id, tm.tool_call_id
+                    )
                     if pending is None:
                         pending = await tool_executions_crud.get_pending_execution(db, session_id)
                     matched = False
@@ -272,10 +264,12 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                             tool_call_id=tm.tool_call_id,
                             tool_input=tool_inputs.get(tm.tool_call_id, {}),
                             status=status,
-                            tool_output=content
+                            tool_output=content,
                         )
                         await db.commit()
-                    logger.info("工具执行落库: name=%s, tool_call_id=%s, status=%s", tm.name, tm.tool_call_id, status.value)
+                    logger.info(
+                        "工具执行落库: name=%s, tool_call_id=%s, status=%s", tm.name, tm.tool_call_id, status.value
+                    )
 
                     # 审批被拒时把当前执行中的计划步骤回退为失败
                     if rejected:
@@ -285,13 +279,15 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                             await todos_crud.update_todo_status(db, target.id, TodoStatus.FAILED)
                             await db.commit()
                             await publish_plan(session_id, plan_queue)
-                        
+
                     # 发布工具结束执行事件
-                    await event_bus.publish(AgentEvent(
-                        eventType=EventType.TOOL_FINISHED,
-                        sessionId=session_id,
-                        data=ToolFinishedResponse(tool=tm.name, tool_output=tm.content)
-                    ))
+                    await event_bus.publish(
+                        AgentEvent(
+                            eventType=EventType.TOOL_FINISHED,
+                            sessionId=session_id,
+                            data=ToolFinishedResponse(tool=tm.name, tool_output=tm.content),
+                        )
+                    )
     finally:
         unregister_active_task(session_id)  # 注销任务
         # 如果生产者还没结束则强制结束

@@ -2,17 +2,16 @@
 
 import json
 import math
-from typing import Sequence
+from collections.abc import Sequence
 
-from pydantic import BaseModel, Field
-from langchain_core.messages import BaseMessage, AIMessage, convert_to_messages
+from langchain_core.messages import AIMessage, BaseMessage, convert_to_messages
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from pydantic import BaseModel, Field
 
 from app.schemas.enums import MessageRole
 
-
 # 估算的 字符/token
-_CHARS_PER_TOKEN = 4.
+_CHARS_PER_TOKEN = 4.0
 
 # 每条消息的框架开销
 _PER_MESSAGE_OVERHEAD = 3
@@ -34,13 +33,16 @@ _TYPE_TO_ROLE = {
 # 上下文token计数模型类
 class MessageTokens(BaseModel):
     """单条message的token计数结构"""
+
     message_id: str | None = Field(None, description="消息id")
     role: MessageRole = Field(..., description="消息角色")
     tokens: int = Field(..., description="这条消息的token数")
     exact: bool = Field(..., description="这条消息是否是通过元数据读出的准确token数")
 
+
 class ContextTokenReport(BaseModel):
     """整份上下文统计报告"""
+
     total: int = Field(..., description="下一次模型调用的预计输入")
     by_role: dict[str, int] = Field(default_factory=dict, description="按消息角色统计token")
     messages: list[MessageTokens] = Field(default_factory=list, description="全量消息token统计")
@@ -54,6 +56,7 @@ def estimate_tokens(text: str) -> int:
         return 0
     return max(1, math.ceil(len(text) / _CHARS_PER_TOKEN))  # 粗略计算token数，向上取整
 
+
 def estimate_tool_schema_tokens(tools: Sequence | None) -> int:
     """估算工具定义的固定开销"""
     if not tools:
@@ -61,11 +64,13 @@ def estimate_tool_schema_tokens(tools: Sequence | None) -> int:
     schemas = [convert_to_openai_tool(t) for t in tools]  # 转化成openai工具列表形式
     return estimate_tokens(json.dumps(schemas, ensure_ascii=False))
 
+
 def _content_str(msg: BaseMessage) -> str:
     """安全取出消息正文信息"""
     if isinstance(msg.content, str):
         return msg.content
     return json.dumps(msg.content, ensure_ascii=False, default=str)
+
 
 def _char_weight(msg: BaseMessage) -> int:
     """一条消息的字符权重计算"""
@@ -80,6 +85,7 @@ def _char_weight(msg: BaseMessage) -> int:
         chars += len(tool_call_id)
     return max(1, chars)
 
+
 def _approx_message_tokens(msg: BaseMessage) -> int:
     """粗略估计单条消息的总占用"""
     text = _content_str(msg)
@@ -87,6 +93,7 @@ def _approx_message_tokens(msg: BaseMessage) -> int:
     if tool_calls:
         text += json.dumps(tool_calls, ensure_ascii=False, default=str)
     return estimate_tokens(text) + _PER_MESSAGE_OVERHEAD
+
 
 def _allocate(total: int, weights: list[int]) -> list[int]:
     """把一段已知的token总量按权重比例拆分成整数份额"""
@@ -103,7 +110,7 @@ def _allocate(total: int, weights: list[int]) -> list[int]:
 def count_context_tokens(messages: Sequence[BaseMessage], tools: Sequence | None = None) -> ContextTokenReport:
     """
     统计当前上下文的token占用, 给出完整报告
-    
+
     Args:
         messages: LangGraph state 中的全量消息
         tools: 当前图绑定的工具列表
@@ -131,7 +138,7 @@ def count_context_tokens(messages: Sequence[BaseMessage], tools: Sequence | None
     exact_ok = bool(anchors)  # 如果没有锚点，直接降级
     # 守卫A检查是否有负增量
     if exact_ok:
-        for (_, ia_in, ia_out), (_, ib_in, _) in zip(anchors, anchors[1:]):
+        for (_, ia_in, ia_out), (_, ib_in, _) in zip(anchors, anchors[1:], strict=False):
             # 如果出现负数说明两次调用之间的历史被改写过，直接不可信
             if ib_in - ia_in - ia_out < 0:
                 exact_ok = False
@@ -151,7 +158,7 @@ def count_context_tokens(messages: Sequence[BaseMessage], tools: Sequence | None
         prefix_sum = first_in - overhead
         if prefix_region:
             parts = _allocate(prefix_sum, [_char_weight(msgs[i]) for i in prefix_region])
-            for idx, t in zip(prefix_region, parts):
+            for idx, t in zip(prefix_region, parts, strict=True):
                 tokens[idx] = t
                 exact[idx] = True
         elif prefix_sum > 0:
@@ -168,12 +175,12 @@ def count_context_tokens(messages: Sequence[BaseMessage], tools: Sequence | None
                 tokens[idx] = _approx_message_tokens(msgs[idx])
 
         # 锚点之间的段
-        for (ia, ia_in, ia_out), (ib, _, _) in zip(anchors, anchors[1:]):
+        for (ia, ia_in, ia_out), (ib, _, _) in zip(anchors, anchors[1:], strict=False):
             seg_region = list(range(ia + 1, ib))
             seg_sum = ib_in - ia_in - ia_out
             if seg_region:
                 parts = _allocate(seg_sum, [_char_weight(msgs[i]) for i in seg_region])
-                for idx, t in zip(seg_region, parts):
+                for idx, t in zip(seg_region, parts, strict=True):
                     tokens[idx] = t
                     exact[idx] = True
             elif seg_sum > 0:
@@ -198,9 +205,5 @@ def count_context_tokens(messages: Sequence[BaseMessage], tools: Sequence | None
         items.append(MessageTokens(message_id=msg.id, role=role, tokens=tokens[idx], exact=exact[idx]))
 
     return ContextTokenReport(
-        total=sum(tokens) + overhead,
-        by_role=by_role,
-        messages=items,
-        overhead=overhead,
-        has_usage=exact_ok
+        total=sum(tokens) + overhead, by_role=by_role, messages=items, overhead=overhead, has_usage=exact_ok
     )

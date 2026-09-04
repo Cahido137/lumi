@@ -1,12 +1,10 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
-
 from alembic import context
-
 from app.config import get_dbsettings
-from app.db.base import Base
 from app.db import models  # noqa: F401 导入即把全部模型注册到 Base.metadata
+from app.db.base import Base
+from sqlalchemy import engine_from_config, pool
 
 config = context.config
 
@@ -19,10 +17,7 @@ if config.config_file_name is not None:
 # % 转义为 %% 防止 configparser 插值报错
 x_args = context.get_x_argument(as_dictionary=True)
 url = x_args.get("db_url") or get_dbsettings().database_url
-config.set_main_option(
-    "sqlalchemy.url",
-    url.replace("+asyncpg", "+psycopg").replace("%", "%%")
-)
+config.set_main_option("sqlalchemy.url", url.replace("+asyncpg", "+psycopg").replace("%", "%%"))
 
 target_metadata = Base.metadata
 

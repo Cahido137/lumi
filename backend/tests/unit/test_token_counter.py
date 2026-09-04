@@ -1,14 +1,12 @@
 """消息级token计数器单元测试"""
 
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
-
-from app.schemas.enums import MessageRole
 from app.core.token_counter import (
+    count_context_tokens,
     estimate_tokens,
     estimate_tool_schema_tokens,
-    count_context_tokens,
 )
-
+from app.schemas.enums import MessageRole
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 # openai格式的工具定义, 用于测试工具开销估算
 _TOOL = {
@@ -26,6 +24,7 @@ _TOOL = {
 
 
 # ---------- estimate_tokens: 统一4字符/token标准 ----------
+
 
 def test_estimate_tokens_empty():
     """空文本不占token"""
@@ -52,6 +51,7 @@ def test_estimate_tokens_chinese_same_standard():
 
 # ---------- estimate_tool_schema_tokens: 工具定义开销 ----------
 
+
 def test_estimate_tool_schema_tokens_empty():
     """没有工具时开销为0"""
     assert estimate_tool_schema_tokens(None) == 0
@@ -64,6 +64,7 @@ def test_estimate_tool_schema_tokens_counts_schema():
 
 
 # ---------- count_context_tokens: 降级路径 ----------
+
 
 def test_count_empty_messages():
     """空上下文不崩溃且总量为0"""
@@ -95,6 +96,7 @@ def test_count_zero_input_tokens_not_anchor():
 
 
 # ---------- count_context_tokens: 锚点精确路径 ----------
+
 
 def test_count_single_anchor_conserves_total():
     """单个锚点时总量守恒: 报告总量 = 锚点input + output"""
@@ -152,6 +154,7 @@ def test_count_anchor_without_prefix_keeps_total():
 
 # ---------- count_context_tokens: 守卫降级 ----------
 
+
 def test_count_negative_delta_degrades():
     """相邻锚点出现负增量说明历史被改写, 整体降级为估算"""
     msgs = [
@@ -180,6 +183,7 @@ def test_count_stale_anchor_degrades():
 
 # ---------- count_context_tokens: 报告结构 ----------
 
+
 def test_count_tools_overhead_included():
     """工具定义的固定开销计入总量"""
     report = count_context_tokens([HumanMessage("B" * 20)], tools=[_TOOL])
@@ -200,7 +204,10 @@ def test_count_role_mapping():
     assert set(report.by_role) == {"system", "user", "assistant", "tool"}
     assert all(v > 0 for v in report.by_role.values())
     assert [m.role for m in report.messages] == [
-        MessageRole.SYSTEM, MessageRole.USER, MessageRole.ASSISTANT, MessageRole.TOOL
+        MessageRole.SYSTEM,
+        MessageRole.USER,
+        MessageRole.ASSISTANT,
+        MessageRole.TOOL,
     ]
 
 

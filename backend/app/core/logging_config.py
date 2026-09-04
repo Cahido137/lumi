@@ -5,17 +5,18 @@ import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-
 # 会话ID上下文变量
 session_id_var: ContextVar[str | None] = ContextVar("session_id", default=None)
 
 # 日志输出格式
 DEFAULT_FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | session=%(session_id)s | %(message)s"
 
+
 class SessionFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.session_id = session_id_var.get() or " - "
         return True
+
 
 def setup_logging(level: str = "INFO") -> None:
     """初始化全局日志配置"""
@@ -28,6 +29,7 @@ def setup_logging(level: str = "INFO") -> None:
     root.addHandler(handler)
     root.setLevel(level.upper())  # 设置日志等级
 
+
 @contextmanager
 def session_log_context(session_id: str):
     """把一段代码的日志绑定到指定会话"""
@@ -37,9 +39,11 @@ def session_log_context(session_id: str):
     finally:
         session_id_var.reset(token)
 
+
 def bind_session_id(session_id: str):
     """设置当前协程上下文的会话ID, 返回token"""
     return session_id_var.set(session_id)
+
 
 def unbind_session_id(token) -> None:
     """恢复会话ID上下文"""

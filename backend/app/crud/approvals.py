@@ -2,12 +2,12 @@
 
 from datetime import datetime
 
-from sqlalchemy import update, func, select, delete, text
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.grants import Grants, extract_grant_key
-from app.schemas.enums import ApprovalStatus, ApprovalScope
 from app.db.models import Approval, ToolExecution
+from app.schemas.enums import ApprovalScope, ApprovalStatus
 
 
 async def create_approval(db: AsyncSession, session_id: str, thread_id: str, tool_execution_id: str) -> Approval:
@@ -17,16 +17,18 @@ async def create_approval(db: AsyncSession, session_id: str, thread_id: str, too
         thread_id=thread_id,
         tool_execution_id=tool_execution_id,
         status=ApprovalStatus.PENDING.value,
-        scope=ApprovalScope.ONE_TIME.value
+        scope=ApprovalScope.ONE_TIME.value,
     )
     # 落库
     db.add(approval)
     await db.flush()
     return approval
 
+
 async def get_approval_by_id(db: AsyncSession, approval_id: str) -> Approval | None:
     """按审批单ID查询审批单"""
     return await db.get(Approval, approval_id)
+
 
 async def get_approval_by_execution_id(db: AsyncSession, tool_execution_id: str) -> Approval | None:
     """按工具执行记录ID查询审批单"""
@@ -34,15 +36,21 @@ async def get_approval_by_execution_id(db: AsyncSession, tool_execution_id: str)
     result = await db.execute(stmt)
     return result.scalars().first()
 
+
 async def update_approval(db: AsyncSession, approval_id: str, status: ApprovalStatus, scope: ApprovalScope) -> None:
     """更新审批单"""
     if isinstance(status, ApprovalStatus):
         status = status.value
     if isinstance(scope, ApprovalScope):
         scope = scope.value
-    stmt = update(Approval).where(Approval.id == approval_id).values(status=status, scope=scope, decided_at=text("clock_timestamp()"))
+    stmt = (
+        update(Approval)
+        .where(Approval.id == approval_id)
+        .values(status=status, scope=scope, decided_at=text("clock_timestamp()"))
+    )
     await db.execute(stmt)
     await db.flush()
+
 
 async def get_session_grants(db: AsyncSession, session_id: str) -> Grants:
     """查询指定会话下的工具授权"""
@@ -54,7 +62,7 @@ async def get_session_grants(db: AsyncSession, session_id: str) -> Grants:
         .where(
             Approval.session_id == session_id,  # 指定会话下的
             Approval.status == ApprovalStatus.APPROVED.value,  # 已授权的
-            Approval.scope.in_([ApprovalScope.TOOL.value, ApprovalScope.COMMAND.value])  # 查询授权
+            Approval.scope.in_([ApprovalScope.TOOL.value, ApprovalScope.COMMAND.value]),  # 查询授权
         )
     )
     result = await db.execute(stmt)
@@ -71,17 +79,28 @@ async def get_session_grants(db: AsyncSession, session_id: str) -> Grants:
                 commands.append(key)  # 加入命令授权
     return grants
 
+
 async def has_pending_approval(db: AsyncSession, session_id: str) -> bool:
     """检查当前会话是否还有未审批的审批单"""
-    stmt = select(Approval.id).where(Approval.session_id == session_id, Approval.status == ApprovalStatus.PENDING.value).limit(1)
+    stmt = (
+        select(Approval.id)
+        .where(Approval.session_id == session_id, Approval.status == ApprovalStatus.PENDING.value)
+        .limit(1)
+    )
     result = await db.execute(stmt)
     return result.first() is not None
 
+
 async def revert_approval(db: AsyncSession, approval_id: str) -> None:
     """回滚审批单状态"""
-    stmt = update(Approval).where(Approval.id == approval_id).values(status=ApprovalStatus.PENDING.value, scope=ApprovalScope.ONE_TIME.value, decided_at=None)
+    stmt = (
+        update(Approval)
+        .where(Approval.id == approval_id)
+        .values(status=ApprovalStatus.PENDING.value, scope=ApprovalScope.ONE_TIME.value, decided_at=None)
+    )
     await db.execute(stmt)
     await db.flush()
+
 
 async def delete_approval_after(db: AsyncSession, session_id: str, created_at: datetime) -> None:
     """删除指定会话中某个时间点之后创建的审批单"""

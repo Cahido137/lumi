@@ -9,7 +9,6 @@ import time
 
 from langchain_core.tools import tool
 
-
 OUTPUT_MAX_LEN = 5000
 DEFAULT_TIMEOUT = 30
 
@@ -57,7 +56,10 @@ if _WINDOWS:
     _kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
     _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     _kernel32.SetInformationJobObject.argtypes = [
-        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
     ]
     _kernel32.SetInformationJobObject.restype = wintypes.BOOL
     _kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
@@ -116,9 +118,7 @@ def _create_kill_job():
 def _assign_to_job(job, pid) -> None:
     """将进程加入作业对象"""
     try:
-        handle = _kernel32.OpenProcess(
-            _PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid
-        )
+        handle = _kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
         if not handle:
             return
         try:

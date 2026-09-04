@@ -1,8 +1,11 @@
-from pydantic import BaseModel, Field, ConfigDict, ValidationError
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class UsageMetadata(BaseModel):
     """模型单次调用返回的元数据"""
+
     model_config = ConfigDict(extra="allow")
 
     input_tokens: int = Field(0, ge=0, description="本次调用消耗的输入token数")

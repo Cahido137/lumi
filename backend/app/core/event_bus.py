@@ -5,13 +5,14 @@ import logging
 
 from app.core.events import AgentEvent
 
-
 MAX_QUEUE_SIZE = 1000
 
 logger = logging.getLogger(__name__)
 
+
 class EventBus:
     """事件总线类"""
+
     def __init__(self):
         # 会话事件队列
         self._queues: dict[str, list[asyncio.Queue]] = {}  # 设计多个队列防止资源竞争
@@ -48,6 +49,7 @@ class EventBus:
     def has_subscribers(self, session_id: str) -> bool:
         """检查当前会话是否还有消费者"""
         return bool(self._queues.get(session_id))
+
 
 # 总线单例
 event_bus = EventBus()

@@ -4,8 +4,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 
-from app.config import get_llmsettings, get_compactsettings
-
+from app.config import get_compactsettings, get_llmsettings
 
 # 已知模型的最大上下文注册表
 MODEL_MAX_CONTEXT: list[tuple[str, int]] = [
@@ -76,10 +75,11 @@ def get_model_max_context() -> int:
 @dataclass(frozen=True)
 class CompactLimits:
     """比例配置按当前模型最大上下文解析后的绝对阈值"""
+
     max_context_tokens: int  # 模型最大上下文
-    trigger_tokens: int      # 触发压缩阈值
-    warn_tokens: int         # 前端告警阈值
-    keep_tokens: int         # 压缩后保留的近期消息token数
+    trigger_tokens: int  # 触发压缩阈值
+    warn_tokens: int  # 前端告警阈值
+    keep_tokens: int  # 压缩后保留的近期消息token数
 
 
 @lru_cache
@@ -91,5 +91,5 @@ def get_compact_limits() -> CompactLimits:
         max_context_tokens=max_tokens,
         trigger_tokens=int(max_tokens * settings.compact_trigger_fraction),
         warn_tokens=int(max_tokens * settings.compact_warn_fraction),
-        keep_tokens=int(max_tokens * settings.compact_keep_fraction)
+        keep_tokens=int(max_tokens * settings.compact_keep_fraction),
     )

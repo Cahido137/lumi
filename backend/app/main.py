@@ -6,18 +6,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core import compat  # 兼容层
-from app.core.checkpoint import close_checkpoint, setup_checkpoint
-from app.routers import chat, sessions, ws, approvals, auth, context
-from app.utils.exception_handlers import register_exception_handlers
 from app.config import get_logsettings
+from app.core import compat  # noqa: F401  兼容层, 导入即生效(切换Windows事件循环策略)
+from app.core.checkpoint import close_checkpoint, setup_checkpoint
 from app.core.logging_config import setup_logging
-
+from app.routers import approvals, auth, chat, context, sessions, ws
+from app.utils.exception_handlers import register_exception_handlers
 
 logger = logging.getLogger(__name__)
 
 # 初始化日志
 setup_logging(get_logsettings().log_level)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

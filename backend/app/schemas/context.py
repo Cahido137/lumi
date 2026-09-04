@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 class ContextUsageResponse(BaseModel):
     """上下文用量响应体"""
+
     used_tokens: int = Field(..., alias="usedTokens", description="当前上下文占用token数")
     max_context_tokens: int = Field(..., alias="maxContextTokens", description="当前模型最大上下文数")
     fraction: float = Field(..., description="上下文使用比例")
@@ -14,6 +15,7 @@ class ContextUsageResponse(BaseModel):
 
 class ContextCompactResponse(BaseModel):
     """手动压缩结果响应体"""
+
     before_tokens: int = Field(..., alias="beforeTokens", description="压缩前上下文token数")
     after_tokens: int = Field(..., alias="afterTokens", description="压缩后上下文token数")
     summarized_message_count: int = Field(..., alias="summarizedMessageCount", description="被摘要覆盖的消息数")

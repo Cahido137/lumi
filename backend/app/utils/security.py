@@ -1,6 +1,6 @@
 """安全认证工具"""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 import jwt
@@ -13,6 +13,7 @@ def hash_password(password: str) -> str:
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
 
+
 def verify_password(password: str, password_hash: str) -> bool:
     """校验密码"""
     try:
@@ -20,15 +21,17 @@ def verify_password(password: str, password_hash: str) -> bool:
     except ValueError:
         return False
 
+
 def create_access_token(uid: int) -> str:
     """签发JWT"""
     settings = get_authsettings()
     payload = {
         "sub": str(uid),
-        "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(days=settings.jwt_expire_days)
+        "iat": datetime.now(UTC),
+        "exp": datetime.now(UTC) + timedelta(days=settings.jwt_expire_days),
     }
     return jwt.encode(payload=payload, key=settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
 
 def decode_access_token(token: str) -> int:
     """校验并解析JWT"""

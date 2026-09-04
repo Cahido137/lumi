@@ -1,8 +1,8 @@
 """测试库连通与隔离的冒烟测试"""
-from sqlalchemy import text
 
 from app.db.models import User
 from app.db.session import SessionLocal
+from sqlalchemy import text
 
 
 async def test_01_db_starts_empty(clean_db):

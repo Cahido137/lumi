@@ -1,9 +1,8 @@
 """上下文压缩配置(CompactSettings)单元测试"""
 
 import pytest
-from pydantic import ValidationError
-
 from app.config import CompactSettings, get_compactsettings
+from pydantic import ValidationError
 
 
 def _make_settings(**overrides):

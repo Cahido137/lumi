@@ -1,9 +1,9 @@
 """计算器工具"""
+
 import ast
 import operator
 
 from langchain_core.tools import tool
-
 
 # AST 节点类型
 _ALLOWED_OPS = {
@@ -13,8 +13,8 @@ _ALLOWED_OPS = {
     ast.Div: operator.truediv,
     ast.Pow: operator.pow,
     ast.Mod: operator.mod,
-    ast.USub: operator.neg,   # 负号 -x
-    ast.UAdd: operator.pos,   # 正号 +x
+    ast.USub: operator.neg,  # 负号 -x
+    ast.UAdd: operator.pos,  # 正号 +x
 }
 
 

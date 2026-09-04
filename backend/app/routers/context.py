@@ -19,15 +19,12 @@ from app.db.session import get_db
 from app.schemas.context import ContextCompactResponse, ContextUsageResponse
 from app.utils.response import success_response
 
-
 router = APIRouter(prefix="/api/sessions", tags=["context"])
 
 
 @router.get("/{session_id}/context/usage")
 async def get_context_usage(
-    session_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    session_id: UUID, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """查询指定会话的当前上下文用量"""
     await get_owned_session_or_404(db, str(session_id), current_user)
@@ -45,15 +42,14 @@ async def get_context_usage(
             warnTokens=limits.warn_tokens,
             triggerTokens=limits.trigger_tokens,
             messageCount=len(messages),
-            compacted=bool(summary_text)
-        )
+            compacted=bool(summary_text),
+        ),
     )
+
 
 @router.post("/{session_id}/context/compact")
 async def compact_context(
-    session_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    session_id: UUID, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """手动触发上下文压缩"""
     await get_owned_session_or_404(db, str(session_id), current_user)
@@ -69,16 +65,14 @@ async def compact_context(
             # 运行手动压缩
             result = await run_compaction(get_manual_compact_middleware(), messages)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"上下文压缩失败: {e}")
+            raise HTTPException(status_code=500, detail=f"上下文压缩失败: {e}") from e
         # 如果判定为无需压缩，则返回零压缩
         if result is None:
             return success_response(
                 message="上下文内容过短, 无需压缩",
                 data=ContextCompactResponse(
-                    beforeTokens=before_tokens,
-                    afterTokens=before_tokens,
-                    summarizedMessageCount=0
-                )
+                    beforeTokens=before_tokens, afterTokens=before_tokens, summarizedMessageCount=0
+                ),
             )
         # 成功压缩后
         final_messages, outcome = result
@@ -91,8 +85,6 @@ async def compact_context(
     return success_response(
         message="上下文压缩成功",
         data=ContextCompactResponse(
-            beforeTokens=before_tokens,
-            afterTokens=after_tokens,
-            summarizedMessageCount=len(outcome.covered_ids)
-        )
+            beforeTokens=before_tokens, afterTokens=after_tokens, summarizedMessageCount=len(outcome.covered_ids)
+        ),
     )

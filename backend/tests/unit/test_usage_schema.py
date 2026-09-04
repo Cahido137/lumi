@@ -1,9 +1,8 @@
 """用量元数据模型(UsageMetadata)单元测试"""
 
 import pytest
-from pydantic import ValidationError
-
 from app.schemas.usage import UsageMetadata
+from pydantic import ValidationError
 
 
 def test_core_fields_parsed():
@@ -55,6 +54,7 @@ def test_model_dump_roundtrip_to_jsonb():
 
 
 # ---------- from_langchain_message: 防御性转换 ----------
+
 
 def test_from_langchain_message_none():
     """None视为无数据"""

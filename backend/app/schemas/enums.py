@@ -1,8 +1,9 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """事件类型枚举"""
+
     # 生命周期
     AGENT_STARTED = "agent_started"  # data: {}
     AGENT_FINISHED = "agent_finished"  # data: {"reply": 回复}
@@ -24,37 +25,60 @@ class EventType(str, Enum):
     APPROVAL_RESULT = "approval_result"  # data: {"approval_id": 审批ID, "status": "approved"/"rejected"}
 
     # 上下文压缩相关
-    CONTEXT_WARNING = "context_warning"  # data: {"used_tokens": 当前已用上下文tokens, "max_context_tokens": 模型最大上下文, "fractions": 使用比例, "message": 警告消息}
-    CONTEXT_COMPACTED = "context_compacted"  # data: {"before_tokens": 压缩前上下文tokens, "after_tokens": 压缩后上下文tokens, "summarized_message_count": 被摘要消息数}
+    # data:
+    # {
+    #   "used_tokens": 当前已用上下文tokens,
+    #   "max_context_tokens": 模型最大上下文,
+    #   "fractions": 使用比例,
+    #   "message": 警告消息
+    # }
+    CONTEXT_WARNING = "context_warning"
+    # data:
+    # {
+    #   "before_tokens": 压缩前上下文tokens,
+    #   "after_tokens": 压缩后上下文tokens,
+    #   "summarized_message_count": 被摘要消息数
+    # }
+    CONTEXT_COMPACTED = "context_compacted"
 
-class TodoStatus(str, Enum):
+
+class TodoStatus(StrEnum):
     """todo 状态枚举"""
+
     PENDING = "pending"  # 未执行
     IN_PROGRESS = "in_progress"  # 正在执行
     DONE = "done"  # 已执行
     FAILED = "failed"  # 失败
 
-class ApprovalStatus(str, Enum):
+
+class ApprovalStatus(StrEnum):
     """审批单状态"""
+
     PENDING = "pending"  # 等待审批
     APPROVED = "approved"  # 审批同意
     REJECTED = "rejected"  # 审批拒绝
 
-class ApprovalScope(str, Enum):
+
+class ApprovalScope(StrEnum):
     """工具审批权限"""
+
     ONE_TIME = "one_time"  # 允许执行一次
     COMMAND = "command"  # 允许此工具始终执行此命令
     TOOL = "tool"  # 允许此工具始终执行
 
-class ExecutionStatus(str, Enum):
+
+class ExecutionStatus(StrEnum):
     """工具执行状态"""
+
     PENDING = "pending"  # 等待审批
     SUCCESS = "success"  # 执行成功
     REJECTED = "rejected"  # 审批被拒
     ERROR = "error"  # 执行出错
 
-class MessageRole(str, Enum):
+
+class MessageRole(StrEnum):
     """消息角色"""
+
     USER = "user"  # 用户消息
     ASSISTANT = "assistant"  # 模型消息
     SYSTEM = "system"  # 系统提示词

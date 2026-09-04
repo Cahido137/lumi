@@ -2,11 +2,8 @@
 
 from types import SimpleNamespace
 
-import pytest
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
-
 import app.core.graph.compact as compact
+import pytest
 from app.core.graph.compact import (
     _ensure_ids,
     _middleware_token_counter,
@@ -16,9 +13,11 @@ from app.core.graph.compact import (
     get_manual_compact_middleware,
     run_compaction,
 )
-
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 # ---------- 测试替身 ----------
+
 
 class _FakeMiddleware:
     """压缩中间件替身: 按公开契约接收(state, runtime), 返回预置更新"""
@@ -45,21 +44,27 @@ def _fake_model():
 
 def _patch_limits(monkeypatch, trigger=75, keep=30):
     """替换压缩阈值解析, 避免读到真实配置"""
-    monkeypatch.setattr(compact, "get_compact_limits", lambda: SimpleNamespace(
-        max_context_tokens=100,
-        trigger_tokens=trigger,
-        warn_tokens=60,
-        keep_tokens=keep,
-    ))
+    monkeypatch.setattr(
+        compact,
+        "get_compact_limits",
+        lambda: SimpleNamespace(
+            max_context_tokens=100,
+            trigger_tokens=trigger,
+            warn_tokens=60,
+            keep_tokens=keep,
+        ),
+    )
 
 
 def _fake_compressed_update(summary_text, kept_messages):
     """构造中间件触发压缩时的标准返回: 删除全部指令 + 摘要消息 + 保留消息"""
-    return {"messages": [
-        RemoveMessage(id=REMOVE_ALL_MESSAGES),
-        HumanMessage(content=summary_text, id="summary-1"),
-        *kept_messages,
-    ]}
+    return {
+        "messages": [
+            RemoveMessage(id=REMOVE_ALL_MESSAGES),
+            HumanMessage(content=summary_text, id="summary-1"),
+            *kept_messages,
+        ]
+    }
 
 
 def _conversation():
@@ -73,6 +78,7 @@ def _conversation():
 
 
 # ---------- _split_system_messages: 只保护开头连续的系统消息段 ----------
+
 
 def test_split_protects_leading_system_block():
     """开头的系统提示词进保护段, 中段的打断消息留在参与压缩的一侧"""
@@ -121,6 +127,7 @@ def test_split_empty_list():
 
 # ---------- _ensure_ids: 缺id补齐, 已有id保留 ----------
 
+
 def test_ensure_ids_assigns_missing_ids():
     """没有id的消息现场补齐唯一id"""
     m1 = HumanMessage(content="a")
@@ -139,6 +146,7 @@ def test_ensure_ids_keeps_existing_ids():
 
 # ---------- _middleware_token_counter: 转发给自己的计数器 ----------
 
+
 def test_middleware_token_counter_delegates(monkeypatch):
     """过滤非消息对象后转发给消息级计数器并返回total"""
     received = []
@@ -154,6 +162,7 @@ def test_middleware_token_counter_delegates(monkeypatch):
 
 
 # ---------- 中间件工厂: 参数装配正确 ----------
+
 
 def test_auto_middleware_uses_token_trigger(monkeypatch):
     """自动压缩中间件的触发条件是触发阈值token数"""
@@ -177,6 +186,7 @@ def test_manual_middleware_always_triggers(monkeypatch):
 
 
 # ---------- run_compaction: 黑盒调用与前后差集识别 ----------
+
 
 @pytest.mark.asyncio
 async def test_run_compaction_not_triggered():
@@ -235,14 +245,13 @@ async def test_run_compaction_no_summary_generated():
     """防御分支: 中间件返回中没有新消息时视为未压缩"""
     m1 = HumanMessage(content="a", id="x1")
     # 返回里只有原消息, 没有摘要
-    fake = _FakeMiddleware(update={"messages": [
-        RemoveMessage(id=REMOVE_ALL_MESSAGES), m1
-    ]})
+    fake = _FakeMiddleware(update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), m1]})
     result = await run_compaction(fake, [m1])
     assert result is None
 
 
 # ---------- compact_node: 图节点返回值形态 ----------
+
 
 @pytest.mark.asyncio
 async def test_compact_node_success(monkeypatch):
@@ -283,6 +292,7 @@ async def test_compact_node_swallows_errors(monkeypatch):
 
 
 # ---------- 图接线: 每次模型调用前必经压缩节点 ----------
+
 
 def test_graph_wiring_compact_before_model():
     """planner->compact->model, 工具循环结束后也经compact回流"""

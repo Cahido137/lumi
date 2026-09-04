@@ -1,6 +1,6 @@
 """会话的 CRUD 操作"""
 
-from sqlalchemy import select, update, func, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # 导入会话 ORM
@@ -14,12 +14,20 @@ async def create_session(db: AsyncSession, title: str, user_id: str) -> Session:
     await db.flush()
     return session
 
-async def list_sessions(db: AsyncSession, user_id: str,skip: int = 0, limit: int = 20) -> list[Session]:
+
+async def list_sessions(db: AsyncSession, user_id: str, skip: int = 0, limit: int = 20) -> list[Session]:
     """按倒序返回会话列表"""
     # 按会话更新时间排序查询
-    stmt = select(Session).where(Session.user_id == user_id).order_by(Session.updated_at.desc(), Session.id.desc()).offset(skip).limit(limit)
+    stmt = (
+        select(Session)
+        .where(Session.user_id == user_id)
+        .order_by(Session.updated_at.desc(), Session.id.desc())
+        .offset(skip)
+        .limit(limit)
+    )
     result = await db.execute(stmt)
     return result.scalars().all()
+
 
 async def get_session_by_id(db: AsyncSession, session_id: str) -> Session | None:
     """按会话ID查询会话"""
@@ -27,11 +35,13 @@ async def get_session_by_id(db: AsyncSession, session_id: str) -> Session | None
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
+
 async def get_session_for_user(db: AsyncSession, session_id: str, user_id: str) -> Session | None:
     """按会话ID和用户ID查询会话"""
     stmt = select(Session).where(Session.id == session_id, Session.user_id == user_id)
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
+
 
 async def touch_session(db: AsyncSession, session_id: str) -> None:
     """刷新会话更新时间"""
@@ -39,11 +49,13 @@ async def touch_session(db: AsyncSession, session_id: str) -> None:
     await db.execute(stmt)
     await db.flush()
 
+
 async def set_has_pending_task(db: AsyncSession, session_id: str, value: bool) -> None:
     """设置会话是否存在被打断而未完成的任务"""
     stmt = update(Session).where(Session.id == session_id).values(has_pending_task=value)
     await db.execute(stmt)
     await db.flush()
+
 
 async def get_has_pending_task(db: AsyncSession, session_id: str) -> bool:
     """查询会话是否存在被打断而未完成的任务"""
@@ -51,12 +63,10 @@ async def get_has_pending_task(db: AsyncSession, session_id: str) -> bool:
     result = await db.execute(stmt)
     return bool(result.scalar_one_or_none())
 
+
 async def set_context_summary(
-        db: AsyncSession, 
-        session_id: str,
-        summary_text: str | None,
-        until_message_id: str | None
-    ) -> None:
+    db: AsyncSession, session_id: str, summary_text: str | None, until_message_id: str | None
+) -> None:
     """为指定会话保存压缩后上下文摘要"""
     stmt = (
         update(Session)
@@ -66,10 +76,11 @@ async def set_context_summary(
     await db.execute(stmt)
     await db.flush()
 
+
 async def get_context_summary(db: AsyncSession, session_id: str) -> tuple[str | None, str | None]:
     """
     返回会话的上下文摘要信息
-    
+
     Returns:
         (摘要正文, 摘要覆盖的最后一条消息ID)
     """

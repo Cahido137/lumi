@@ -30,6 +30,7 @@ async def add_three_messages(session_id):
 
 # ---------- add_message: usage落库 ----------
 
+
 async def test_add_message_stores_usage():
     """assistant消息的usage序列化后持久化到JSONB列"""
     sid = await create_user_and_session()
@@ -59,12 +60,14 @@ async def test_add_message_usage_defaults_to_none():
 async def test_add_message_usage_extra_fields_preserved():
     """缓存明细等供应商附加字段也随usage一并持久化"""
     sid = await create_user_and_session()
-    usage = UsageMetadata.model_validate({
-        "input_tokens": 350,
-        "output_tokens": 240,
-        "total_tokens": 590,
-        "input_token_details": {"cache_read": 100},
-    })
+    usage = UsageMetadata.model_validate(
+        {
+            "input_tokens": 350,
+            "output_tokens": 240,
+            "total_tokens": 590,
+            "input_token_details": {"cache_read": 100},
+        }
+    )
     async with SessionLocal() as db:
         msg = await messages_crud.add_message(db, sid, MessageRole.ASSISTANT, "ok", usage=usage)
         await db.commit()
@@ -75,6 +78,7 @@ async def test_add_message_usage_extra_fields_preserved():
 
 
 # ---------- list_messages_after: 边界查询 ----------
+
 
 async def test_list_messages_after_none_returns_all():
     """不指定边界时返回会话全量消息, 正序"""
@@ -126,6 +130,7 @@ async def test_list_messages_after_cross_session_falls_back_to_all():
 
 
 # ---------- set/get_context_summary: 摘要存取 ----------
+
 
 async def test_context_summary_roundtrip():
     """摘要写入后读回一致"""
