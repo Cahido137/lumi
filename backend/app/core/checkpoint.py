@@ -23,7 +23,7 @@ def get_checkpointer() -> AsyncPostgresSaver:
     global _pool
     if _pool is None:
         _pool = _create_pool()
-    return AsyncPostgresSaver(_pool)
+    return AsyncPostgresSaver(_pool)  # type: ignore[arg-type]
 
 
 async def setup_checkpoint() -> None:

@@ -37,16 +37,16 @@ async def get_approval_by_execution_id(db: AsyncSession, tool_execution_id: str)
     return result.scalars().first()
 
 
-async def update_approval(db: AsyncSession, approval_id: str, status: ApprovalStatus, scope: ApprovalScope) -> None:
+async def update_approval(
+    db: AsyncSession, approval_id: str, status: ApprovalStatus | str, scope: ApprovalScope | str
+) -> None:
     """更新审批单"""
-    if isinstance(status, ApprovalStatus):
-        status = status.value
-    if isinstance(scope, ApprovalScope):
-        scope = scope.value
+    status_value = status.value if isinstance(status, ApprovalStatus) else status
+    scope_value = scope.value if isinstance(scope, ApprovalScope) else scope
     stmt = (
         update(Approval)
         .where(Approval.id == approval_id)
-        .values(status=status, scope=scope, decided_at=text("clock_timestamp()"))
+        .values(status=status_value, scope=scope_value, decided_at=text("clock_timestamp()"))
     )
     await db.execute(stmt)
     await db.flush()

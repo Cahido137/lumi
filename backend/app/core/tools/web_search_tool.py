@@ -37,7 +37,7 @@ async def _request_with_retry(
     client: httpx.AsyncClient, url: str, api_key: str, query: str, max_results: int
 ) -> list[dict]:
     """带重试的搜索请求: 超时与瞬时服务端错误(429/5xx)退避重试, 其余错误直接抛"""
-    last_err = None
+    last_err: httpx.TimeoutException | httpx.HTTPStatusError | None = None
     for attempt in range(MAX_RETRIES + 1):
         try:
             return await _search_with_tavily(client, url, api_key, query, max_results)
@@ -50,6 +50,8 @@ async def _request_with_retry(
                 raise  # 401/402/403 等不可重试, 直接抛
         if attempt < MAX_RETRIES:
             await asyncio.sleep(RETRY_BACKOFF * (attempt + 1))
+    if last_err is None:
+        raise RuntimeError("搜索失败: 未记录到任何错误")
     raise last_err
 
 

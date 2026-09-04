@@ -1,6 +1,7 @@
 """LLM 工厂组件"""
 
 from functools import lru_cache
+from typing import Any
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -50,7 +51,7 @@ def create_llm(**overrides) -> BaseChatModel:
     """
     settings: LLMSettings = get_llmsettings()  # 获取大模型默认设置
     # 参数字典
-    params = {
+    params: dict[str, Any] = {
         "provider": settings.llm_provider or detect_provider(settings.llm_base_url),
         "model": settings.llm_model,
         "base_url": settings.llm_base_url,

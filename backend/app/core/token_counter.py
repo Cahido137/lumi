@@ -2,7 +2,8 @@
 
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, convert_to_messages
 from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -126,7 +127,7 @@ def count_context_tokens(messages: Sequence[BaseMessage], tools: Sequence | None
     anchors: list[tuple[int, int, int]] = []  # (消息顺序号, input_tokens, output_tokens)
     for i, msg in enumerate(msgs):
         if isinstance(msg, AIMessage):
-            usage = msg.usage_metadata or {}  # 得到元数据字典
+            usage: Mapping[str, Any] = msg.usage_metadata or {}  # 得到元数据字典
             input_tokens = usage.get("input_tokens") or 0
             if input_tokens > 0:
                 anchors.append((i, input_tokens, usage.get("output_tokens") or 0))

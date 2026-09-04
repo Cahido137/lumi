@@ -46,6 +46,23 @@ class AgentState(TypedDict):
     compact_after_tokens: NotRequired[int]  # 压缩后上下文总token数
 
 
+class StateUpdate(TypedDict, total=False):
+    """节点返回的部分更新状态"""
+
+    messages: list[BaseMessage]
+    todos: list[TodoItem]
+    grants: dict  # 工具授权快照  格式要求: {"tool": [], "command": {}}
+    tool_decisions: dict[str, str]  # 每个工具调用的审批决定
+    executed_tool_call_ids: list[str]  # 执行过的工具产生的tool_call_id
+    pending_tool_call_id: str | None  # 正在等待审批的工具call_id
+    tool_inputs: dict[str, dict]  # 工具调用入参快照  {tool_call_id: args}
+    session_id: str
+    compact_covered_ids: list[str]  # 历次摘要中被压缩掉的消息id列表
+    compact_summary_text: str  # 最近一次压缩生成的摘要文本
+    compact_before_tokens: int  # 压缩前的上下文总token数
+    compact_after_tokens: int  # 压缩后上下文总token数
+
+
 class InputState(TypedDict):
     """输入状态"""
 

@@ -62,7 +62,7 @@ async def _run_agent_session_locked(
     try:
         # 发布开始事件
         await event_bus.publish(
-            AgentEvent(eventType=EventType.AGENT_STARTED, sessionId=session_id, data=AgentStartResponse())
+            AgentEvent(event_type=EventType.AGENT_STARTED, session_id=session_id, data=AgentStartResponse())
         )
 
         # 存在待处理的审批禁止开始新一轮的对话
@@ -112,8 +112,8 @@ async def _run_agent_session_locked(
                 logger.info("工具待审批: approval_id=%s, tool=%s", approval.id, stream_result.interrupt.tool)
                 await event_bus.publish(
                     AgentEvent(
-                        eventType=EventType.APPROVAL_REQUIRED,
-                        sessionId=session_id,
+                        event_type=EventType.APPROVAL_REQUIRED,
+                        session_id=session_id,
                         data=ApprovalRequiredResponse(
                             approval_id=approval.id,
                             tool=stream_result.interrupt.tool,
@@ -132,8 +132,8 @@ async def _run_agent_session_locked(
         # 发布结束事件
         await event_bus.publish(
             AgentEvent(
-                eventType=EventType.AGENT_FINISHED,
-                sessionId=session_id,
+                event_type=EventType.AGENT_FINISHED,
+                session_id=session_id,
                 data=AgentFinishedResponse(reply=stream_result.final_reply),
             )
         )
@@ -156,8 +156,8 @@ async def _run_agent_session_locked(
         # 发布打断事件
         await event_bus.publish(
             AgentEvent(
-                eventType=EventType.RUN_CANCELLED,
-                sessionId=session_id,
+                event_type=EventType.RUN_CANCELLED,
+                session_id=session_id,
                 data=RunCancelledResponse(message=e.message, message_id=partial_id),
             )
         )
@@ -167,7 +167,7 @@ async def _run_agent_session_locked(
         logger.exception("会话运行异常")
         # 发布错误事件
         await event_bus.publish(
-            AgentEvent(eventType=EventType.ERROR, sessionId=session_id, data=ErrorResponse(message=str(e)))
+            AgentEvent(event_type=EventType.ERROR, session_id=session_id, data=ErrorResponse(message=str(e)))
         )
         raise
 
@@ -242,8 +242,8 @@ async def resume_agent_session(
                     # 发布审批结束事件到总线
                     await event_bus.publish(
                         AgentEvent(
-                            eventType=EventType.APPROVAL_RESULT,
-                            sessionId=session_id,
+                            event_type=EventType.APPROVAL_RESULT,
+                            session_id=session_id,
                             data=ApprovalResultResponse(approval_id=approval.id, status=decision),
                         )
                     )
@@ -269,8 +269,8 @@ async def resume_agent_session(
                         await db.commit()
                         await event_bus.publish(
                             AgentEvent(
-                                eventType=EventType.ERROR,
-                                sessionId=session_id,
+                                event_type=EventType.ERROR,
+                                session_id=session_id,
                                 data=ErrorResponse(message=f"恢复执行失败: {e}"),
                             )
                         )
@@ -294,8 +294,8 @@ async def resume_agent_session(
                         )
                         await event_bus.publish(
                             AgentEvent(
-                                eventType=EventType.APPROVAL_REQUIRED,
-                                sessionId=session_id,
+                                event_type=EventType.APPROVAL_REQUIRED,
+                                session_id=session_id,
                                 data=ApprovalRequiredResponse(
                                     approval_id=new_approval.id,
                                     tool=stream_result.interrupt.tool,
@@ -315,8 +315,8 @@ async def resume_agent_session(
 
                 await event_bus.publish(
                     AgentEvent(
-                        eventType=EventType.AGENT_FINISHED,
-                        sessionId=session_id,
+                        event_type=EventType.AGENT_FINISHED,
+                        session_id=session_id,
                         data=AgentFinishedResponse(reply=stream_result.final_reply),
                     )
                 )
@@ -340,8 +340,8 @@ async def resume_agent_session(
                 # 发布打断事件
                 await event_bus.publish(
                     AgentEvent(
-                        eventType=EventType.RUN_CANCELLED,
-                        sessionId=session_id,
+                        event_type=EventType.RUN_CANCELLED,
+                        session_id=session_id,
                         data=RunCancelledResponse(message=e.message, message_id=partial_id),
                     )
                 )

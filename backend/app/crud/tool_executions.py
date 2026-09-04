@@ -46,18 +46,17 @@ async def create_finished_execution(
     tool_name: str,
     tool_call_id: str,
     tool_input: dict,
-    status: ExecutionStatus,
+    status: ExecutionStatus | str,
     tool_output: str | None = None,
 ):
     """直接记录一条工具执行记录"""
-    if isinstance(status, ExecutionStatus):
-        status = status.value
+    status_value = status.value if isinstance(status, ExecutionStatus) else status
     execution = ToolExecution(
         session_id=session_id,
         tool_name=tool_name,
         tool_call_id=tool_call_id,
         tool_input=tool_input or {},
-        status=status,
+        status=status_value,
         tool_output=tool_output,
         needs_approval=False,
         finished_at=text("clock_timestamp()"),

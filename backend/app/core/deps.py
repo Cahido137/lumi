@@ -22,9 +22,11 @@ async def get_current_user(
 ) -> User:
     """从请求头的授权解析当前用户"""
     token = credentials.credentials if credentials else None  # 拿到用户token
+    if token is None:
+        raise HTTPException(status_code=401, detail="未登录或登录信息失效") from None
     try:
         uid: int = decode_access_token(token)
-    except (pyjwt.PyJWTError, AttributeError):
+    except pyjwt.PyJWTError:
         # 如果解析不通过直接抛异常
         raise HTTPException(status_code=401, detail="未登录或登录信息失效") from None
 

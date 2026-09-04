@@ -7,7 +7,7 @@ from langchain_core.messages import BaseMessage, RemoveMessage, SystemMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from app.core.context_limits import get_compact_limits
-from app.core.graph.state import AgentState
+from app.core.graph.state import AgentState, StateUpdate
 from app.core.llm import get_chat_model
 from app.core.token_counter import count_context_tokens
 
@@ -89,7 +89,7 @@ async def run_compaction(
     _ensure_ids(rest)
     input_ids = {m.id for m in rest}
     # 进行压缩操作
-    update = await middleware.abefore_model({"messages": rest}, None)
+    update = await middleware.abefore_model({"messages": rest}, None)  # type: ignore[arg-type, typeddict-item]
     if update is None:
         return None  # 中间件判定不需要压缩
     # 过滤RemoveMessage
@@ -101,12 +101,12 @@ async def run_compaction(
         return None
     # 提取摘要覆盖消息
     preserved_ids = {m.id for m in preserved}
-    covered_ids = [m.id for m in rest if m.id not in preserved_ids]
+    covered_ids = [m.id for m in rest if m.id is not None and m.id not in preserved_ids]
     outcome = CompactionOutcome(summary_message=summaries[0], preserved_messages=preserved, covered_ids=covered_ids)
     return protected + new_messages, outcome
 
 
-async def compact_node(state: AgentState) -> dict:
+async def compact_node(state: AgentState) -> StateUpdate:
     """上下文压缩节点"""
     middleware = get_auto_compact_middleware()
     before_tokens = count_context_tokens(state["messages"]).total  # 得到压缩前的上下文token数

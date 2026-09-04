@@ -2,11 +2,13 @@
 
 import ast
 import operator
+from collections.abc import Callable
+from typing import Any
 
 from langchain_core.tools import tool
 
 # AST 节点类型
-_ALLOWED_OPS = {
+_ALLOWED_OPS: dict[type, Callable[..., Any]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,

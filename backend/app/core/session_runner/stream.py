@@ -117,7 +117,7 @@ async def process_stream(
                     streamed_parts.append(content)  # 记录已经生成的流式文本
                     # 发布流式输出事件
                     await event_bus.publish(
-                        AgentEvent(eventType=EventType.TOKEN, sessionId=session_id, data=TokenResponse(token=content))
+                        AgentEvent(event_type=EventType.TOKEN, session_id=session_id, data=TokenResponse(token=content))
                     )
                 continue
 
@@ -143,8 +143,8 @@ async def process_stream(
                     context_warned = False  # 压缩后重置上下文警告
                     await event_bus.publish(
                         AgentEvent(
-                            eventType=EventType.CONTEXT_COMPACTED,
-                            sessionId=session_id,
+                            event_type=EventType.CONTEXT_COMPACTED,
+                            session_id=session_id,
                             data=ContextCompactedResponse(
                                 before_tokens=compact_update.get("compact_before_tokens") or 0,
                                 after_tokens=compact_update.get("compact_after_tokens") or 0,
@@ -180,8 +180,8 @@ async def process_stream(
                         # 发布上下文警告
                         await event_bus.publish(
                             AgentEvent(
-                                eventType=EventType.CONTEXT_WARNING,
-                                sessionId=session_id,
+                                event_type=EventType.CONTEXT_WARNING,
+                                session_id=session_id,
                                 data=ContextWarningResponse(
                                     used_tokens=usage.input_tokens,
                                     max_context_tokens=limits.max_context_tokens,
@@ -208,8 +208,8 @@ async def process_stream(
                         # 发布工具开始执行事件
                         await event_bus.publish(
                             AgentEvent(
-                                eventType=EventType.TOOL_STARTED,
-                                sessionId=session_id,
+                                event_type=EventType.TOOL_STARTED,
+                                session_id=session_id,
                                 data=ToolStartedResponse(tool=tool["name"], tool_input=tool["args"] or {}),
                             )
                         )
@@ -283,8 +283,8 @@ async def process_stream(
                     # 发布工具结束执行事件
                     await event_bus.publish(
                         AgentEvent(
-                            eventType=EventType.TOOL_FINISHED,
-                            sessionId=session_id,
+                            event_type=EventType.TOOL_FINISHED,
+                            session_id=session_id,
                             data=ToolFinishedResponse(tool=tm.name, tool_output=tm.content),
                         )
                     )

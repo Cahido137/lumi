@@ -26,7 +26,7 @@ async def list_sessions(db: AsyncSession, user_id: str, skip: int = 0, limit: in
         .limit(limit)
     )
     result = await db.execute(stmt)
-    return result.scalars().all()
+    return list(result.scalars().all())
 
 
 async def get_session_by_id(db: AsyncSession, session_id: str) -> Session | None:

@@ -15,15 +15,15 @@ class EventBus:
 
     def __init__(self):
         # 会话事件队列
-        self._queues: dict[str, list[asyncio.Queue]] = {}  # 设计多个队列防止资源竞争
+        self._queues: dict[str, list[asyncio.Queue[AgentEvent]]] = {}  # 设计多个队列防止资源竞争
 
-    def subscribe(self, session_id: str) -> asyncio.Queue:
+    def subscribe(self, session_id: str) -> asyncio.Queue[AgentEvent]:
         """消费者订阅会话事件流"""
-        queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+        queue: asyncio.Queue[AgentEvent] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
         self._queues.setdefault(session_id, []).append(queue)
         return queue
 
-    def unsubscribe(self, session_id: str, queue: asyncio.Queue) -> None:
+    def unsubscribe(self, session_id: str, queue: asyncio.Queue[AgentEvent]) -> None:
         """消费者取消订阅会话事件流"""
         # 从队列列表中移除这个连接所占有的队列，防止影响其他连接
         queues = self._queues.get(session_id)

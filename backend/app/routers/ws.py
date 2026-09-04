@@ -31,6 +31,9 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
     """实时聊天"""
     sid = str(session_id)
     token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4401)
+        return
     try:
         uid: int = decode_access_token(token)
     except (pyjwt.PyJWTError, AttributeError, ValueError):

@@ -6,6 +6,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from typing import IO
 
 from langchain_core.tools import tool
 
@@ -18,7 +19,7 @@ if _WINDOWS:
     import ctypes
     from ctypes import wintypes
 
-    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
 
     class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
         _fields_ = [
@@ -189,12 +190,8 @@ def run_shell(command: str, timeout: int = DEFAULT_TIMEOUT) -> str:
     job = _create_kill_job()
     opened = []
     try:
-        kwargs = {}
-        if not _WINDOWS:
-            # 新会话, 便于超时后按进程组终止子进程
-            kwargs["start_new_session"] = True
-        out_file = open(out_path, "wb")
-        err_file = open(err_path, "wb")
+        out_file: IO[bytes] = open(out_path, "wb")
+        err_file: IO[bytes] = open(err_path, "wb")
         opened.extend([out_file, err_file])
         proc = subprocess.Popen(
             command,
@@ -202,7 +199,7 @@ def run_shell(command: str, timeout: int = DEFAULT_TIMEOUT) -> str:
             stdin=subprocess.DEVNULL,
             stdout=out_file,
             stderr=err_file,
-            **kwargs,
+            start_new_session=not _WINDOWS,
         )
         out_file.close()
         err_file.close()
@@ -245,9 +242,9 @@ def run_shell(command: str, timeout: int = DEFAULT_TIMEOUT) -> str:
         # M1 大改: 启动/IO 失败通过异常传播, 不再返回错误字符串
         raise RuntimeError(f"执行失败: {e}") from e
     finally:
-        for f in opened:
+        for fh in opened:
             try:
-                f.close()
+                fh.close()
             except Exception:
                 pass
         _close_job(job)

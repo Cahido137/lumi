@@ -2,7 +2,7 @@ import logging
 from typing import Literal
 from uuid import uuid4
 
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -10,7 +10,7 @@ from langgraph.types import interrupt
 from app.core.grants import Grants
 from app.core.graph.compact import compact_node
 from app.core.graph.schemas import ApprovalInterrupt, PlanOutput
-from app.core.graph.state import AgentState, InputState, OutputState
+from app.core.graph.state import AgentState, InputState, OutputState, StateUpdate
 from app.core.llm import create_planner_llm, get_chat_model, get_planner_structured_method
 from app.core.prompts import (
     PLAN_EXECUTION_PROMPT,
@@ -58,7 +58,7 @@ async def _invoke_planner(planner_llm, prompt_messages):
         return None
 
 
-async def planner_node(state: AgentState) -> AgentState:
+async def planner_node(state: AgentState) -> StateUpdate:
     """计划器节点"""
     task = state["messages"][-1].content  # 拿到用户的消息
     existing_todos = sorted(state.get("todos") or [], key=lambda x: x.position)
@@ -98,7 +98,7 @@ async def planner_node(state: AgentState) -> AgentState:
     return {"todos": todos}
 
 
-async def model_node(state: AgentState) -> AgentState:
+async def model_node(state: AgentState) -> StateUpdate:
     """大模型节点"""
     todos = sorted(state.get("todos") or [], key=lambda x: x.position)
     messages = state["messages"]
@@ -114,7 +114,7 @@ async def model_node(state: AgentState) -> AgentState:
     return {"messages": [response]}
 
 
-async def precheck_node(state: AgentState) -> AgentState:
+async def precheck_node(state: AgentState) -> StateUpdate:
     """预审批节点, 负责标记下一条需要人工审批的工具调用"""
     msg = _find_tool_call_message(state)  # 先看有没有带有tool_call_id的消息
     if msg is None:
@@ -138,7 +138,7 @@ async def precheck_node(state: AgentState) -> AgentState:
     return {"pending_tool_call_id": None}
 
 
-async def approval_node(state: AgentState) -> AgentState:
+async def approval_node(state: AgentState) -> StateUpdate:
     """审批节点, 负责为指定pending_tool_call_id的工具发起或者恢复审批中断"""
     pending = state.get("pending_tool_call_id")
     if not pending:
@@ -154,7 +154,7 @@ async def approval_node(state: AgentState) -> AgentState:
     return {"tool_decisions": {pending: decision_value}, "pending_tool_call_id": None}
 
 
-async def exec_node(state: AgentState) -> AgentState:
+async def exec_node(state: AgentState) -> StateUpdate:
     """工具执行节点"""
     msg = _find_tool_call_message(state)
     if msg is None:
@@ -162,7 +162,7 @@ async def exec_node(state: AgentState) -> AgentState:
     grants = Grants.model_validate(state.get("grants") or {})
     decisions = dict(state.get("tool_decisions") or {})
     executed = list(state.get("executed_tool_call_ids") or [])
-    tool_msgs = []
+    tool_msgs: list[BaseMessage] = []
     new_executed = []
     todos_update = None  # 标记工具执行成功后同步的 todos 状态
     for tc in msg.tool_calls:
@@ -215,7 +215,7 @@ async def exec_node(state: AgentState) -> AgentState:
                 base = todos_update if todos_update is not None else list(state.get("todos") or [])
                 todos_update = [t.model_copy(update={"status": new_status}) if t.id == todo_id else t for t in base]
         new_executed.append(tc_id)
-    node_result = {
+    node_result: StateUpdate = {
         "messages": tool_msgs,
         "executed_tool_call_ids": new_executed,
         "tool_inputs": {tc["id"]: tc["args"] or {} for tc in msg.tool_calls},  # 取出工具调用入参
@@ -225,12 +225,12 @@ async def exec_node(state: AgentState) -> AgentState:
     return node_result
 
 
-def router_after_model(state: AgentState) -> Literal["precheck_node", END]:
+def router_after_model(state: AgentState) -> Literal["precheck_node", "__end__"]:
     """模型输出后路由"""
     last_msg = state["messages"][-1]
-    if last_msg.tool_calls:
+    if getattr(last_msg, "tool_calls", None):
         return "precheck_node"
-    return END
+    return "__end__"
 
 
 def router_after_exec(state: AgentState) -> Literal["precheck_node", "compact_node"]:

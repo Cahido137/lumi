@@ -1,6 +1,7 @@
 """会话运行器辅助函数"""
 
 from collections.abc import Sequence
+from typing import Any
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -56,7 +57,7 @@ def _sanitize_dangling_tool_calls(messages: list[BaseMessage]) -> list[BaseMessa
     valid_ids: set[str] = set()
     for msg in sanitized:
         if isinstance(msg, AIMessage):
-            valid_ids = {tc["id"] for tc in msg.tool_calls}  # 合法工具调用id
+            valid_ids = {tc["id"] for tc in msg.tool_calls if tc["id"] is not None}  # 合法工具调用id
             result.append(msg)
         elif isinstance(msg, ToolMessage):
             # 只有在合法调用id列表中的工具调用才保留
@@ -83,7 +84,7 @@ def to_langchain_messages(rows: Sequence[Message]) -> list[BaseMessage]:
         if factory is None:
             raise ValueError("不支持的消息类型")
         if factory is AIMessage:
-            kwargs = {"content": row.content, "id": row.id, "usage_metadata": row.usage}
+            kwargs: dict[str, Any] = {"content": row.content, "id": row.id, "usage_metadata": row.usage}
             if row.tool_calls:
                 kwargs["tool_calls"] = row.tool_calls
             messages.append(AIMessage(**kwargs))
@@ -126,6 +127,8 @@ async def publish_plan(session_id: str, plan_queue: PlanQueue) -> None:
     """发布计划更新事件"""
     await event_bus.publish(
         AgentEvent(
-            eventType=EventType.PLAN_UPDATED, sessionId=session_id, data=PlanUpdatedResponse(todos=plan_queue.to_list())
+            event_type=EventType.PLAN_UPDATED,
+            session_id=session_id,
+            data=PlanUpdatedResponse(todos=plan_queue.to_list()),
         )
     )

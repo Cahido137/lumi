@@ -55,7 +55,7 @@ async def list_messages_after(db: AsyncSession, session_id: str, after_message_i
         .order_by(Message.created_at.asc(), Message.id.asc())
     )
     result = await db.execute(stmt)
-    return result.scalars().all()
+    return list(result.scalars().all())
 
 
 async def add_message(
