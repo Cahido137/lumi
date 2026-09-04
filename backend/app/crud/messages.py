@@ -113,3 +113,12 @@ async def delete_messages_after(db: AsyncSession, session_id: str, created_at: d
     await db.execute(stmt)
     await sessions_crud.touch_session(db, session_id)
     await db.flush()
+
+async def filter_existing_ids(db: AsyncSession, session_id: str, message_ids: list[str]) -> list[str]:
+    """过滤在本会话中真实存在的id列表"""
+    if not message_ids:
+        return []
+    stmt = select(Message.id).where(Message.session_id == session_id, Message.id.in_(message_ids))
+    result = await db.execute(stmt)
+    existing = set(result.scalars().all())
+    return [mid for mid in message_ids if mid in existing]

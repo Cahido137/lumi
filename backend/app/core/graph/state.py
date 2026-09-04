@@ -38,6 +38,8 @@ class AgentState(TypedDict):
     session_id: NotRequired[str]
     compact_covered_ids: Annotated[list[str], concat_list_reducer]  # 历次摘要中被压缩掉的消息id列表
     compact_summary_text: NotRequired[str]  # 最近一次压缩生成的摘要文本
+    compact_before_tokens: NotRequired[int]  # 压缩前的上下文总token数
+    compact_after_tokens: NotRequired[int]  # 压缩后上下文总token数
 
 
 class InputState(TypedDict):

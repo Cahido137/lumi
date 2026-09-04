@@ -19,7 +19,7 @@ from app.core.prompts import get_system_messages
 from app.core.plan_queue import PlanQueue
 from app.core.event_response import RunCancelledResponse
 from app.core.session_runner.context import StreamResult
-from app.core.session_runner.helpers import build_config, load_plan_queue, to_langchain_messages
+from app.core.session_runner.helpers import build_config, load_plan_queue, rebuild_history
 from app.core.session_runner.state import (
     get_session_lock,
     get_cancel_event,
@@ -71,22 +71,17 @@ async def _run_agent_session_locked(session_id: str, content: str, *, user_messa
                 raise ValueError("该会话存在未完成的审批, 请先完成审批再开始新对话")
 
         async with SessionLocal() as db:
-            # 拼接消息
-            history_row = await messages_crud.list_message_asc(db, session_id)
-            # 如果要复用消息的话，将这条消息排除在外
-            if user_message_id is not None:
-                history_row = [row for row in history_row if row.id != user_message_id]
-            history = to_langchain_messages(history_row)
-            messages = get_system_messages() + history + [HumanMessage(content=content)]
-
-            # 用户消息落库
             if user_message_id is None:
-                await messages_crud.add_message(db, session_id, MessageRole.USER, content)
+                user_row = await messages_crud.add_message(db, session_id, MessageRole.USER, content)
                 await db.commit()
+                user_message_id = user_row.id
+            # 重建消息历史
+            history = await rebuild_history(db, session_id, exclude_id=user_message_id)
+            messages = get_system_messages() + history + [HumanMessage(content=content, id=user_message_id)]
 
             run_context = build_config(session_id)  # 创建配置
             grants = await approvals_crud.get_session_grants(db, session_id)  # 获取当前会话工具授权
-            graph_input = {"messages": messages, "grants": grants.model_dump()}
+            graph_input = {"messages": messages, "grants": grants.model_dump(), "session_id": session_id}
             # 如果存在因被打断而未完成的任务，则注入先前的完整计划
             if await sessions_crud.get_has_pending_task(db, session_id):
                 rows = await todos_crud.list_todos(db, session_id)
@@ -123,7 +118,10 @@ async def _run_agent_session_locked(session_id: str, content: str, *, user_messa
                 return None
 
             # 最后回答
-            ai_message = await messages_crud.add_message(db, session_id, MessageRole.ASSISTANT, stream_result.final_reply)
+            ai_message = await messages_crud.add_message(
+                db, session_id, MessageRole.ASSISTANT, stream_result.final_reply,
+                usage=stream_result.final_usage
+            )
             await db.commit()
 
         # 发布结束事件
@@ -280,7 +278,8 @@ async def resume_agent_session(approval_id: str, decision: ApprovalStatus, scope
                         ))
                         return None
                     ai_message = await messages_crud.add_message(
-                        db, session_id, MessageRole.ASSISTANT, stream_result.final_reply
+                        db, session_id, MessageRole.ASSISTANT, stream_result.final_reply,
+                        usage=stream_result.final_usage
                     )
                     await db.commit()
 
@@ -346,6 +345,7 @@ async def retry_agent_session(session_id: str, message_id: str, new_content: str
                 await messages_crud.delete_messages_after(db, session_id, message.created_at)
                 await approvals_crud.delete_approval_after(db, session_id, message.created_at)
                 await tool_executions_crud.delete_execution_after(db, session_id, message.created_at)
+                await sessions_crud.set_context_summary(db, session_id, None, None)
                 if new_content is not None:
                     await messages_crud.update_message_content(db, message_id, new_content)
                 await db.commit()

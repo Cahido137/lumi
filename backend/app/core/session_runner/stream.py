@@ -10,8 +10,12 @@ from app.core.events import AgentEvent
 from app.core.event_response import (
     TokenResponse,
     ToolStartedResponse,
-    ToolFinishedResponse
+    ToolFinishedResponse,
+    ContextWarningResponse,
+    ContextCompactedResponse
 )
+from app.core.context_limits import get_compact_limits
+from app.schemas.usage import UsageMetadata
 from app.core.graph.builder import build_agent_graph
 from app.core.graph.schemas import ApprovalInterrupt
 from app.core.plan_queue import PlanQueue
@@ -79,6 +83,8 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
     final_reply = ""
     interrupt_info: ApprovalInterrupt | None = None
     streamed_parts: list[str] = []  # 保存打断前已经流式输出出来的文本片段
+    final_usage: UsageMetadata | None = None  # 最后一次模型调用的用量数据
+    context_warned = False  # 当前运行是否触发了上下文警告
 
     # chunk 队列
     chunks: asyncio.Queue = asyncio.Queue()
@@ -125,6 +131,31 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                 interrupt_info = ApprovalInterrupt.model_validate(payload["__interrupt__"][0].value)  # 提取中断信息
                 break
 
+            # 找到压缩节点输出
+            if "compact_node" in payload:
+                compact_update = payload["compact_node"] or {}
+                summary_text = compact_update.get("compact_summary_text")
+                covered_ids = compact_update.get("compact_covered_ids")
+                if summary_text and covered_ids:
+                    # 过滤出真实存在数据库中的id，排除摘要消息的临时id
+                    existing_ids = await messages_crud.filter_existing_ids(db, session_id, covered_ids)
+                    if len(existing_ids) == len(covered_ids):
+                        await sessions_crud.set_context_summary(db, session_id, summary_text, existing_ids[-1])
+                        await db.commit()
+                        logger.info("上下文摘要落库: 覆盖 %d 条消息", len(existing_ids))
+                    else:
+                        logger.warning("压缩覆盖的消息不存在于数据库, 跳过摘要落库")
+                    context_warned = False  # 压缩后重置上下文警告
+                    await event_bus.publish(AgentEvent(
+                        eventType=EventType.CONTEXT_COMPACTED,
+                        sessionId=session_id,
+                        data=ContextCompactedResponse(
+                            before_tokens=compact_update.get("compact_before_tokens") or 0,
+                            after_tokens=compact_update.get("compact_after_tokens") or 0,
+                            summarized_message_count=len(covered_ids)
+                        )
+                    ))
+
             # 找到计划器节点输出
             if "planner_node" in payload:
                 planner_output = payload.get("planner_node") or {}
@@ -145,6 +176,24 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
             # 找到模型节点输出
             if "model_node" in payload:
                 msg = payload["model_node"]["messages"][-1]  # 拿到最近一条消息
+                usage = UsageMetadata.from_langchain_message(getattr(msg, "usage_metadata", None))
+                if usage is not None:
+                    final_usage = usage  # 滚动保留最后一次模型调用用量
+                    limits = get_compact_limits()
+                    if usage.input_tokens >= limits.warn_tokens and not context_warned:
+                        context_warned = True  # 标记已触发警告
+                        fraction = usage.input_tokens / limits.max_context_tokens  # 计算目前已占有上下文的比例
+                        # 发布上下文警告
+                        await event_bus.publish(AgentEvent(
+                            eventType=EventType.CONTEXT_WARNING,
+                            sessionId=session_id,
+                            data=ContextWarningResponse(
+                                used_tokens=usage.input_tokens,
+                                max_context_tokens=limits.max_context_tokens,
+                                fraction=round(fraction, 4),
+                                message=f"上下文使用率达到 {round(fraction * 100)}% , 即将自动压缩上下文"
+                            )
+                        ))
                 if msg.tool_calls:
                     # 将消息落库
                     normalized_calls = [
@@ -154,12 +203,13 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
                     content = msg.content if isinstance(msg.content, str) else str(msg.content)
                     await messages_crud.add_message(
                         db, session_id, MessageRole.ASSISTANT, content,
-                        tool_calls=normalized_calls
+                        tool_calls=normalized_calls,
+                        usage=usage
                     )
                     await db.commit()
 
                     for tool in msg.tool_calls:
-                        # todo标记工具不发布
+                        # 计划标记工具不发布
                         if tool["name"] in TODO_MARKER_TOOLS:
                             continue
                         # 发布工具开始执行事件
@@ -266,4 +316,4 @@ async def process_stream(db, session_id: str, plan_queue: PlanQueue, graph_input
         if not remaining:
             await sessions_crud.set_has_pending_task(db, session_id, False)
             await db.commit()
-    return StreamResult(final_reply=final_reply, interrupt=interrupt_info)
+    return StreamResult(final_reply=final_reply, interrupt=interrupt_info, final_usage=final_usage)

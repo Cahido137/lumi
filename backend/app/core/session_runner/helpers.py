@@ -12,6 +12,8 @@ from app.core.event_response import PlanUpdatedResponse
 from app.core.plan_queue import PlanQueue
 from app.core.session_runner.context import RunContext
 from app.crud import todos as todos_crud
+from app.crud import sessions as sessions_crud
+from app.crud import messages as messages_crud
 from app.schemas.enums import EventType, MessageRole
 from app.db.models import Message
 
@@ -44,7 +46,7 @@ def _sanitize_dangling_tool_calls(messages: list[BaseMessage]) -> list[BaseMessa
                 sanitized.append(msg)
             # 如果没完整地调用完工具就只存储消息文本丢弃tool_call
             else:
-                sanitized.append(AIMessage(content=msg.content))
+                sanitized.append(AIMessage(content=msg.content, id=msg.id, usage_metadata=msg.usage_metadata))
         # 其余消息直接合并
         else:
             sanitized.append(msg)
@@ -74,19 +76,43 @@ def to_langchain_messages(rows: Sequence[Message]) -> list[BaseMessage]:
             messages.append(ToolMessage(
                 content=row.content,
                 tool_call_id=row.tool_call_id or "",
-                name=row.tool_name
+                name=row.tool_name,
+                id=row.id
             ))
             continue
         factory = _ROLE_MESSAGE.get(row.role)
         # 不支持的消息类型
         if factory is None:
             raise ValueError("不支持的消息类型")
-        # 如果模型消息是携带工具调用请求的消息也一起拿出转化
-        if factory is AIMessage and row.tool_calls:
-            messages.append(AIMessage(content=row.content, tool_calls=row.tool_calls))
+        if factory is AIMessage:
+            kwargs = {
+                "content": row.content,
+                "id": row.id,
+                "usage_metadata": row.usage
+            }
+            if row.tool_calls:
+                kwargs["tool_calls"] = row.tool_calls
+            messages.append(AIMessage(**kwargs))
         else:
-            messages.append(factory(content=row.content))
+            messages.append(factory(content=row.content, id=row.id))
     return _sanitize_dangling_tool_calls(messages)
+
+async def rebuild_history(db: AsyncSession, session_id: str, exclude_id: str | None = None) -> list[BaseMessage]:
+    """从数据库重建本次图运行的历史消息"""
+    summary_text, until_id = await sessions_crud.get_context_summary(db, session_id)
+    if summary_text and until_id:
+        boundary = await messages_crud.get_message_by_id(db, until_id)  # 获取压缩边界消息
+        if boundary is not None and boundary.session_id == session_id:
+            rows = await messages_crud.list_messages_after(db, session_id, until_id)
+            if exclude_id is not None:
+                rows = [row for row in rows if row.id != exclude_id]
+            return [HumanMessage(content=summary_text, id=until_id)] + to_langchain_messages(rows)
+        await sessions_crud.set_context_summary(db, session_id, None, None)
+        await db.commit()
+    rows = await messages_crud.list_message_asc(db, session_id)
+    if exclude_id is not None:
+        rows = [row for row in rows if row.id != exclude_id]
+    return to_langchain_messages(rows)
 
 def build_config(session_id: str) -> RunContext:
     """生成运行config与thread_id"""

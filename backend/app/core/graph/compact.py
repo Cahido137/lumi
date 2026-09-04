@@ -108,6 +108,7 @@ async def run_compaction(
 async def compact_node(state: AgentState) -> dict:
     """上下文压缩节点"""
     middleware = get_auto_compact_middleware()
+    before_tokens = count_context_tokens(state["messages"]).total  # 得到压缩前的上下文token数
     try:
         result = await run_compaction(middleware, state["messages"])
     except Exception:
@@ -116,8 +117,11 @@ async def compact_node(state: AgentState) -> dict:
     if result is None:
         return {}
     final_messages, outcome = result
+    after_tokens = count_context_tokens(final_messages).total
     return {
         "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *final_messages],  # 删除所有消息，并追加压缩后保存的消息
         "compact_covered_ids": outcome.covered_ids,
-        "compact_summary_text": outcome.summary_message.text
+        "compact_summary_text": outcome.summary_message.text,
+        "compact_before_tokens": before_tokens,
+        "compact_after_tokens": after_tokens
     }
