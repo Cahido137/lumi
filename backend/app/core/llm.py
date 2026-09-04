@@ -67,6 +67,9 @@ def create_llm(**overrides) -> BaseChatModel:
     # 覆盖参数
     params.update(overrides)
 
+    # 支持openai的厂商一律按照openai借口格式
+    resolved_provider = _resolve_provider(params["provider"])
+
     # 展开参数字典
     kwargs: dict = dict(
         model=params["model"],
@@ -80,6 +83,9 @@ def create_llm(**overrides) -> BaseChatModel:
         extra_body=params["extra_body"]
     )
 
+    # 只有兼容openai或anthropic借口才支持流失消息返回token
+    if resolved_provider in {"openai", "anthropic"}:
+        kwargs["stream_usage"] = True
     # 创建模型实例
     return init_chat_model(**kwargs)
 

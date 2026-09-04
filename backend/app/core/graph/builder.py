@@ -8,6 +8,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langgraph.types import interrupt
 
 from app.core.graph.state import AgentState, InputState, OutputState
+from app.core.graph.compact import compact_node
 from app.core.llm import get_chat_model, create_planner_llm, get_planner_structured_method
 from app.core.tools import TOOLS
 from app.core.tools.todo_tool import TODO_MARKER_TOOLS, TODO_START_TOOL, TODO_DONE_TOOL
@@ -253,13 +254,13 @@ def router_after_model(state: AgentState) -> Literal["precheck_node", END]:
         return "precheck_node"
     return END
 
-def router_after_exec(state: AgentState) -> Literal["precheck_node", "model_node"]:
+def router_after_exec(state: AgentState) -> Literal["precheck_node", "compact_node"]:
     """执行节点后路由"""
     msg = _find_tool_call_message(state)
     executed = state.get("executed_tool_call_ids") or []
     # 如果工具调用消息不为空并且所有的tool_call都执行完毕了
     if msg is not None and all(tc["id"] in executed for tc in msg.tool_calls):
-        return "model_node"
+        return "compact_node"
     return "precheck_node"
 
 
@@ -271,14 +272,16 @@ def build_agent_graph(checkpointer=None):
         output_schema=OutputState
     )
     builder.add_node("planner_node", planner_node)
+    builder.add_node("compact_node", compact_node)
     builder.add_node("model_node", model_node)
     builder.add_node("precheck_node", precheck_node)
     builder.add_node("approval_node", approval_node)
     builder.add_node("exec_node", exec_node)
     builder.add_edge(START, "planner_node")
-    builder.add_edge("planner_node", "model_node")
+    builder.add_edge("planner_node", "compact_node")
+    builder.add_edge("compact_node", "model_node")
     builder.add_conditional_edges("model_node", router_after_model, path_map=["precheck_node", END])
     builder.add_edge("precheck_node", "approval_node")
     builder.add_edge("approval_node", "exec_node")
-    builder.add_conditional_edges("exec_node", router_after_exec, path_map=["precheck_node", "model_node"])
+    builder.add_conditional_edges("exec_node", router_after_exec, path_map=["precheck_node", "compact_node"])
     return builder.compile(checkpointer=checkpointer)

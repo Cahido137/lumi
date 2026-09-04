@@ -35,6 +35,9 @@ class AgentState(TypedDict):
     executed_tool_call_ids: Annotated[list[str], concat_list_reducer]  # 以及执行过的工具产生的tool_call_id
     pending_tool_call_id: NotRequired[str | None]  # 正在等待审批的工具call_id
     tool_inputs: dict[str, dict]  # 工具调用入参快照  {tool_call_id: args}
+    session_id: NotRequired[str]
+    compact_covered_ids: Annotated[list[str], concat_list_reducer]  # 历次摘要中被压缩掉的消息id列表
+    compact_summary_text: NotRequired[str]  # 最近一次压缩生成的摘要文本
 
 
 class InputState(TypedDict):
@@ -42,6 +45,7 @@ class InputState(TypedDict):
     messages: list[BaseMessage]
     grants: NotRequired[dict]
     todos: NotRequired[list]  # 被打断任务的旧计划注入
+    session_id: NotRequired[str]
 
 
 class OutputState(TypedDict):
