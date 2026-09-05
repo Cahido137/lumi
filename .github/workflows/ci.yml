@@ -40,7 +40,7 @@ jobs:
       LLM_BASE_URL: https://api.openai.com/v1
       LLM_API_KEY: sk-ci-dummy-key
       LLM_MODEL: gpt-4o-mini
-      JWT_SECRET: ci-test-secret-not-for-prod
+      JWT_SECRET: ci-test-secret-not-for-prod-0123456789
 
     steps:
       - name: 检出代码

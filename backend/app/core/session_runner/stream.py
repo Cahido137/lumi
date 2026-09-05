@@ -47,7 +47,10 @@ def get_agent_graph():
 
 async def _produce_stream(graph_input, config, chunks: asyncio.Queue) -> None:
     """图流生产者"""
-    async for chunk in get_agent_graph().astream(graph_input, config=config, stream_mode=["updates", "messages"]):
+    # durability=sync: 每个超步的检查点同步落库后再继续, 避免后台异步写入未完成即被终止导致状态丢失
+    async for chunk in get_agent_graph().astream(
+        graph_input, config=config, stream_mode=["updates", "messages"], durability="sync"
+    ):
         await chunks.put(chunk)  # 生产者将 chunk 存入队列
     await chunks.put(None)
 
@@ -290,10 +293,16 @@ async def process_stream(
                     )
     finally:
         unregister_active_task(session_id)  # 注销任务
-        # 如果生产者还没结束则强制结束
+        # 如果生产者还没结束
         if not producer.done():
-            producer.cancel()
-            await asyncio.gather(producer, return_exceptions=True)
+            if interrupt_info is not None:
+                # 中断场景: 等待生产者自然结束, 确保中断记录与检查点落库后再返回,
+                # 否则后续恢复执行可能读不到中断状态, 导致审批节点被重复中断
+                await asyncio.gather(producer, return_exceptions=True)
+            else:
+                # 取消或异常场景: 立即终止生产者
+                producer.cancel()
+                await asyncio.gather(producer, return_exceptions=True)
 
     # 如果图是正常结束的，将所有正在执行的任务结束
     if interrupt_info is None and executed_any:
