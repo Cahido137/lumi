@@ -1,6 +1,7 @@
 """E2E测试: HTTP接口链(注册→会话→聊天→审批), 模型用假的, 不起真实服务器"""
 
 import asyncio
+import time
 
 import httpx
 import pytest
@@ -55,6 +56,18 @@ async def get_executions(session_id):
     async with SessionLocal() as db:
         result = await db.execute(select(ToolExecution).where(ToolExecution.session_id == session_id))
         return list(result.scalars())
+
+
+async def wait_for_execution_status(session_id, expected: str, timeout: float = 5.0):
+    deadline = time.monotonic() + timeout
+    rows = []
+    while time.monotonic() < deadline:
+        rows = await get_executions(session_id)
+        if rows and rows[0].status == expected:
+            return rows
+        await asyncio.sleep(0.05)
+    actual = rows[0].status if rows else "无记录"
+    raise AssertionError(f"等待{timeout}秒后执行记录仍不是{expected}, 实际: {actual}")
 
 
 async def test_register_login_me_chain(client):
@@ -139,7 +152,7 @@ async def test_approval_flow_via_http(client, monkeypatch):
         headers=auth_header(data),
     )
     assert res2.json()["message"] == "已收到决定, 任务已完成"
-    rows = await get_executions(sid)
+    rows = await wait_for_execution_status(sid, ExecutionStatus.SUCCESS.value)
     assert rows[0].status == ExecutionStatus.SUCCESS.value
     assert tool.calls == [{"command": "dir"}]
 
@@ -159,13 +172,17 @@ async def test_approval_reject_via_http(client, monkeypatch):
     )
     data = await register_user(client)
     sid = await create_session(client, data)
-    await client.post(f"/api/sessions/{sid}/chat", json={"content": "列目录"}, headers=auth_header(data))
-    await client.post(
+    res = await client.post(f"/api/sessions/{sid}/chat", json={"content": "列目录"}, headers=auth_header(data))
+    assert res.status_code == 200
+    assert res.json()["message"] == "任务暂停, 等待人工审批"
+    res2 = await client.post(
         f"/api/approvals/{await get_approval_id(sid)}/decide",
         json={"status": "rejected"},
         headers=auth_header(data),
     )
-    rows = await get_executions(sid)
+    assert res2.status_code == 200
+    assert res2.json()["message"] == "已收到决定, 任务已完成"
+    rows = await wait_for_execution_status(sid, ExecutionStatus.REJECTED.value)
     assert rows[0].status == ExecutionStatus.REJECTED.value
     assert tool.calls == []
 
