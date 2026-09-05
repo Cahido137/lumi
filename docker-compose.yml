@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: agent-postgres
+    container_name: lumi-postgres
     environment:
       POSTGRES_USER: agent
       POSTGRES_PASSWORD: agent123
@@ -15,6 +15,18 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+  backend:
+    build: ./backend
+    container_name: lumi-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agent:agent123@postgres:5432/agent_db
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata:
