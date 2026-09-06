@@ -154,6 +154,22 @@ docker compose up --build -d
 
 3. 打开 FastAPI 交互文档: http://localhost:8000/docs
 
+### 替代方案: 使用预构建镜像
+
+后端镜像已随版本标签发布至 GitHub Container Registry, 支持匿名拉取, 使用者无需在本地执行构建。
+
+```bash
+docker pull ghcr.io/cahido137/lumi-backend:latest
+```
+
+拉取完成后, 将 `docker-compose.yml` 中 backend 服务的 `build: ./backend` 替换为下述 `image` 字段, 其余配置保持不变:
+
+```yaml
+    image: ghcr.io/cahido137/lumi-backend:latest
+```
+
+容器启动时先执行 `alembic upgrade head` 完成建表与迁移, 随后以非 root 用户 `appuser` 运行服务进程。
+
 ## 本地开发
 
 ```bash
