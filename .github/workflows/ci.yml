@@ -11,6 +11,11 @@ on:
       - "backend/**"
       - ".github/workflows/ci.yml"
 
+# 同一引用上的新提交会取消尚未结束的旧任务
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     working-directory: backend
@@ -19,6 +24,11 @@ jobs:
   check:
     name: 代码检查与测试
     runs-on: ubuntu-latest
+    # 防止测试挂死时任务烧满默认 6 小时上限
+    timeout-minutes: 15
+    # 最小权限: CI 仅需读取仓库内容, 与 docker-publish.yml 保持一致
+    permissions:
+      contents: read
 
     services:
       postgres:
