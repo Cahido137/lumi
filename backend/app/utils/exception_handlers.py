@@ -1,3 +1,5 @@
+"""全局异常处理函数注册器。"""
+
 from fastapi import FastAPI, HTTPException
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -10,7 +12,11 @@ from app.utils.exception import (
 
 
 def register_exception_handlers(app: FastAPI):
-    """注册全局异常处理器"""
+    """注册全局异常处理器。
+
+    Args:
+        app: 待注册的 FastAPI 应用实例。
+    """
     app.add_exception_handler(HTTPException, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(IntegrityError, integrity_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(SQLAlchemyError, sqlalchemy_error_handler)  # type: ignore[arg-type]
