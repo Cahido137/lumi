@@ -1,3 +1,13 @@
+"""业务数据表的 ORM 模型类定义。
+
+本模块定义了所有数据库业务表, 涵盖用户、会话、消息、计划、工具执行记录、审批单等。
+图运行过程中的中间状态与中断断点所用到的数据表由 LangGraph 框架统一管理, 本模块不负责。
+
+Note:
+    所有业务数据表的主键统一为字符串形式的 UUID, 使用 uuid4, 由 gen_uuid 函数生成。
+    时间戳统一由数据库侧的 server_default 填充。
+"""
+
 from datetime import datetime
 from uuid import uuid4
 
@@ -9,12 +19,29 @@ from app.db.base import Base
 
 
 def gen_uuid() -> str:
-    """生成字符串UUID"""
+    """生成字符串形式的 UUID, 用作主键的生成。
+
+    Returns:
+        str: 一个新的 UUID4 字符串。
+
+    Note:
+        仅在 SQLAlchemy 的列默认值中传入本函数, 以函数本身传入而不是函数执行结果。
+    """
     return str(uuid4())
 
 
 class User(Base):
-    """用户信息表"""
+    """用户表, 存储用户账号凭据与相关个人信息。
+
+    id 为内部主键, 不应暴露给用户, 只应在服务器查询中使用。
+    uid 为对外编号, 可暴露给用户。
+    username 为登录用户名, 全局唯一。
+    nickname 为昵称, 不唯一。
+    password_hash 存储密码哈希值, 不存储密码明文。
+
+    Note:
+        令牌中携带的主体标识是 uid 而非 id, 使用 uid 查询用户。
+    """
 
     __tablename__ = "users"
 
@@ -32,7 +59,15 @@ class User(Base):
 
 
 class Session(Base):
-    """会话表, 一次对话为一条会话记录"""
+    """会话表, 一次对话为一条会话记录, 同时承载该会话的上下文压缩状态。
+
+    user_id 作为外键, 关联用户表中的用户, 级联删除。
+    status 区分进行中与已归档。
+    summary_text 与 summary_until_message_id 是耦合字段, 同时为空或同时有值。
+    summary_text 保存最近一次压缩生成的摘要, summary_until_message_id 保存该摘要所覆盖到的最后一条消息ID,
+    重建历史消息时以 summary_until_message_id 作为边界进行重建。
+    has_pending_task 用于标记上一轮运行被人工打断且计划尚未执行完毕。
+    """
 
     __tablename__ = "sessions"
 
@@ -52,7 +87,17 @@ class Session(Base):
 
 
 class Message(Base):
-    """消息表, 记录每一轮对话"""
+    """消息表, 按消息生成顺序记录会话中的每一条消息。
+
+    role 记录消息的所属角色。
+    当类型为 assistant 时, 应使用 tool_calls 保存模型声明的工具调用列表。
+    当类型为 tool 时, 应使用 tool_name 与 tool_call_id, 对应工具发起的那次调用。
+    所有消息都应填充 content 字段, 无正文时填充空字符串。
+    usage 用于保存模型返回的 token 用量元数据。
+
+    Note:
+        created_at 使用 clock_timestamp 保存语句执行时刻, 以保证记录的时间顺序正确。
+    """
 
     __tablename__ = "messages"
 
@@ -76,7 +121,12 @@ class Message(Base):
 
 
 class Todo(Base):
-    """计划表"""
+    """计划表, 用于保存任务步骤。
+
+    session_id 作为外键, 关联计划表所属的会话, 级联删除。
+    position 记录本步骤在步骤列表中的位置, 用作排序。
+    status 记录本步骤的执行状态。
+    """
 
     __tablename__ = "todos"
 
@@ -98,7 +148,15 @@ class Todo(Base):
 
 
 class ToolExecution(Base):
-    """工具执行表"""
+    """工具执行表, 记录每一次工具调用的信息。
+
+    tool_call_id 记录发起本次工具调用的工具调用标识。
+    needs_approval 用于标记本工具是否需要经过审批。
+    status 用于标记工具执行状态。
+
+    Note:
+        待审批工具会在执行前就创建状态为 pending 的记录。
+    """
 
     __tablename__ = "tool_executions"
 
@@ -121,7 +179,16 @@ class ToolExecution(Base):
 
 
 class Approval(Base):
-    """审批表"""
+    """审批表, 记录需要审批工具的人工审批单。
+
+    tool_execution_id 作为外键, 关联被审批的工具执行记录, 级联删除。
+    status 表示审批单自身的状态。
+    scope 表示本次审批的授权范围。
+
+    Note:
+        thread_id 保存发起本次中断的 LangGraph 检查点线程标识。
+        同一轮运行可能产生多张审批单, 它们使用相同的 thread_id。
+    """
 
     __tablename__ = "approvals"
 
