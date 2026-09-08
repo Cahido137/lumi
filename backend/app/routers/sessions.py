@@ -14,6 +14,12 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 DEFAULT_TITLE = "新会话"
+"""创建会话时标题为空所使用的默认值。
+
+Note:
+    此处取值与 Session.title 列上的 default 值相同, 但路由层总是会显式地传入标题,
+    因此列的默认值实际不会被触发。修改时需要同时修改两处。
+"""
 
 
 @router.post("/create")
@@ -33,7 +39,7 @@ async def list_sessions(
     db: AsyncSession = Depends(get_db),
 ):
     """获取分页会话列表"""
-    skip = (page - 1) * page_size  # 计算页码
+    skip = (page - 1) * page_size  # 由页码换算查询偏移量
     sessions = await sessions_crud.list_sessions(db, current_user.id, skip, page_size)
     session_list = [
         SessionSingleResponse(

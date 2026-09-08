@@ -19,7 +19,9 @@ class ChatResponse(BaseModel):
 
     reply 为完整回复内容。
     created_at 允许为 None。
-    当本轮运行处于等待审批或者已经被中断的状态时, 不会返回完整的回复内容。
+
+    Note:
+        对话被人工打断时不返回本响应体, 信封中的 data 字段直接为 None。
     """
 
     session_id: str = Field(..., alias="sessionId")
@@ -29,7 +31,7 @@ class ChatResponse(BaseModel):
     """完整回复内容。"""
 
     created_at: datetime | None = Field(None, alias="createdAt")
-    """回复创建时间。等待审批或者被中断时为 None。"""
+    """回复创建时间。等待审批时为 None; 被打断时不返回本响应体, 信封中的 data 字段直接返回 None。"""
 
 
 class MessageSingleResponse(BaseModel):

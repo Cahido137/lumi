@@ -206,6 +206,45 @@ async def test_retry_via_http(client, monkeypatch):
     assert [m["content"] for m in msgs2.json()["data"]["items"]][::-1] == ["新问题", "新回答"]
 
 
+async def test_retry_pause_via_http(client, monkeypatch):
+    """HTTP重试: 重试后触发审批暂停, data为ChatResponse而非null且createdAt为None"""
+    tool = FakeTool("run_shell", result="目录列表")
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(content="旧回答"),
+                AIMessage(content="", tool_calls=[{"name": "run_shell", "args": {"command": "dir"}, "id": "c1"}]),
+            ]
+        ),
+        tools={"run_shell": tool},
+    )
+    data = await register_user(client)
+    sid = await create_session(client, data)
+    # 首轮正常完成, 拿到可供重试的用户消息
+    res = await client.post(f"/api/sessions/{sid}/chat", json={"content": "旧问题"}, headers=auth_header(data))
+    assert res.json()["data"]["reply"] == "旧回答"
+    msgs = await client.get(f"/api/sessions/{sid}/messages", headers=auth_header(data))
+    user_msg_id = next(m["id"] for m in msgs.json()["data"]["items"] if m["role"] == "user")
+    # 重试时模型改为发起高危工具调用, 本轮应停在审批中断上
+    res2 = await client.post(
+        f"/api/sessions/{sid}/messages/{user_msg_id}/retry",
+        json={"content": "新问题"},
+        headers=auth_header(data),
+    )
+    assert res2.status_code == 200
+    assert res2.json()["message"] == "任务暂停, 等待人工审批"
+    # 统一契约: 等待审批时 data 为 ChatResponse, 与 chat 端点形态一致, 不再是 null
+    body = res2.json()["data"]
+    assert body is not None
+    assert body["sessionId"] == sid
+    assert body["reply"] == "任务暂停, 等待人工审批"
+    assert body["createdAt"] is None
+    # 审批单已落库, 工具尚未执行
+    assert await get_approval_id(sid) is not None
+    assert tool.calls == []
+
+
 async def test_session_ownership_isolated(client):
     """会话归属: 访问他人会话返回404"""
     user_a = await register_user(client, "user_a")

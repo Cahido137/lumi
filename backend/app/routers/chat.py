@@ -22,6 +22,9 @@ from app.utils.response import success_response
 
 router = APIRouter(prefix="/api/sessions", tags=["chat"])
 
+PAUSE_REPLY = "任务暂停, 等待人工审批"
+"""运行中因等待审批而暂停时, 填入 message 与 ChatResponse.reply 字段中的提示文案。"""
+
 
 @router.post("/{session_id}/chat")
 async def chat(
@@ -40,14 +43,14 @@ async def chat(
     except RunCancelledError as e:
         return success_response(message=e.message, data=None)
     except ValueError as e:
-        # 捕获会话运行器中锁守卫的异常
+        # 捕获会话运行器中的审批前置检查异常: 会话存在未完成审批时禁止开始新一轮对话
         raise HTTPException(status_code=409, detail=str(e)) from e
 
     # 如果没有返回，说明此处中断了
     if ai_message is None:
         return success_response(
-            message="任务暂停, 等待人工审批",
-            data=ChatResponse(sessionId=str(session_id), reply="任务暂停, 等待人工审批", createdAt=None),
+            message=PAUSE_REPLY,
+            data=ChatResponse(sessionId=str(session_id), reply=PAUSE_REPLY, createdAt=None),
         )
 
     return success_response(
@@ -116,7 +119,9 @@ async def retry_message(
         raise HTTPException(status_code=404, detail=str(e)) from e
 
     if ai_message is None:
-        return success_response(message="任务暂停, 等待人工审批", data=None)
+        return success_response(
+            message=PAUSE_REPLY, data=ChatResponse(sessionId=str(session_id), reply=PAUSE_REPLY, createdAt=None)
+        )
     return success_response(
         message="已重新运行对话",
         data=ChatResponse(sessionId=str(session_id), reply=ai_message.content, createdAt=ai_message.created_at),

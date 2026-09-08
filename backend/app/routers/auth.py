@@ -27,7 +27,6 @@ async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db))
     """注册"""
     hashed_password = hash_password(request.password)
     user = await users_crud.create_user(db, request.username, hashed_password, request.nickname)
-    await db.commit()
     return success_response(message="注册成功", data=_build_token_response(user))
 
 
