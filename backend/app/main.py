@@ -10,7 +10,7 @@ from app.config import get_logsettings
 from app.core import compat  # noqa: F401  兼容层, 导入即生效(切换Windows事件循环策略)
 from app.core.checkpoint import close_checkpoint, setup_checkpoint
 from app.core.logging_config import setup_logging
-from app.routers import approvals, auth, chat, context, sessions, ws
+from app.routers import approvals, auth, chat, context, health, sessions, ws
 from app.utils.exception_handlers import register_exception_handlers
 
 logger = logging.getLogger(__name__)
@@ -51,3 +51,4 @@ app.include_router(ws.router)
 app.include_router(approvals.router)
 app.include_router(auth.router)
 app.include_router(context.router)
+app.include_router(health.router)
