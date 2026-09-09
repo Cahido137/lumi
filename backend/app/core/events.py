@@ -1,4 +1,4 @@
-"""运行事件"""
+"""运行事件的结构封装。"""
 
 from datetime import UTC, datetime
 
@@ -9,7 +9,7 @@ from app.schemas.enums import EventType
 
 
 class AgentEvent(BaseModel):
-    """事件结构封装"""
+    """事件结构封装。"""
 
     event_type: EventType = Field(..., alias="eventType", description="事件类型")
     session_id: str = Field(..., alias="sessionId", description="所属会话ID")

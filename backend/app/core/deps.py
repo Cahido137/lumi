@@ -1,4 +1,4 @@
-"""鉴权与数据归属校验"""
+"""鉴权与数据归属校验。"""
 
 import jwt as pyjwt
 from fastapi import Depends, HTTPException, Request
@@ -20,7 +20,19 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """从请求头的授权解析当前用户"""
+    """从请求头的 Authorization 解析当前用户。
+
+    Args:
+        request: 当前请求。
+        credentials: Bearer 凭据, 缺失时为 None。
+        db: 数据库会话。
+
+    Returns:
+        User: 当前登录用户。
+
+    Raises:
+        HTTPException 401: 未携带令牌、令牌无效或用户不存在。
+    """
     token = credentials.credentials if credentials else None  # 拿到用户token
     if token is None:
         raise HTTPException(status_code=401, detail="未登录或登录信息失效") from None
@@ -37,7 +49,19 @@ async def get_current_user(
 
 
 async def get_owned_session_or_404(db: AsyncSession, session_id: str, user: User) -> Session:
-    """会话归属"""
+    """查询会话并校验其归属于指定用户。
+
+    Args:
+        db: 数据库会话。
+        session_id: 会话ID。
+        user: 当前登录用户。
+
+    Returns:
+        Session: 归属校验通过返回的会话对象。
+
+    Raises:
+        HTTPException 404: 会话不存在, 或会话不属于该用户。
+    """
     session = await sessions_crud.get_session_for_user(db, session_id, user.id)
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")
@@ -45,7 +69,19 @@ async def get_owned_session_or_404(db: AsyncSession, session_id: str, user: User
 
 
 async def get_owned_approval_or_404(db: AsyncSession, approval_id: str, user: User) -> Approval:
-    """审批单归属"""
+    """查询审批单并校验其归属于指定用户。
+
+    Args:
+        db: 数据库会话。
+        approval_id: 审批单ID。
+        user: 当前登录用户。
+
+    Returns:
+        Approval: 归属校验通过返回的审批单对象。
+
+    Raises:
+        HTTPException 404: 审批单不存在, 或其所属会话不属于该用户。
+    """
     approval = await approvals_crud.get_approval_by_id(db, approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="审批单不存在")

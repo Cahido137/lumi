@@ -46,7 +46,7 @@ def create_llm(**overrides) -> BaseChatModel:
     """以默认设置创建大模型, 可以自行修改部分参数。
 
     Args:
-        **overrides: 需要覆盖的参数。
+        **overrides: 需要覆盖的参数, 键名必须是本函数 params 字典中已有的参数。
 
     Returns:
         BaseChatModel: 创建出来的大模型实例。
@@ -84,7 +84,7 @@ def create_llm(**overrides) -> BaseChatModel:
         timeout=params["timeout"],
         max_retries=params["max_retries"],
         extra_body=params["extra_body"],
-        stream_usage=True,
+        stream_usage=True,  # OpenAI 协议下流式响应携带 usage_metadata
     )
 
     # 创建模型实例
@@ -102,7 +102,7 @@ def create_planner_llm() -> BaseChatModel:
     """创建计划器llm。
 
     Note:
-        本函数是针对deepseek思考模式无法支持结构化输出的策略。
+        由于 deepseek 思考模式不支持结构化输出, 因此本函数会为 deepseek 关闭思考模式。
     """
     settings = get_llmsettings()
     # 如果是 deepseek 则关闭思考模式

@@ -1,15 +1,23 @@
-"""检查点管理。"""
+"""检查点管理。
+
+Note:
+    本模块负责维护一个独立于 SQLAlchemy 引擎的 psycopg 连接池, 两者连接同一数据库。
+"""
 
 from langgraph.checkpoint.postgres.aio import AsyncConnectionPool, AsyncPostgresSaver
 
 from app.config import get_dbsettings
 
-# 全局连接池
 _pool: AsyncConnectionPool | None = None
+"""检查点专用的 psycopg 异步连接池, 首次连接时惰性创建。"""
 
 
 def _create_pool() -> AsyncConnectionPool:
-    # 建立数据库连接url
+    """创建一个关闭状态的检查点连接池。
+
+    Returns:
+        AsyncConnectionPool: 处于关闭状态的连接池。
+    """
     base = get_dbsettings().database_url.replace("+asyncpg", "")
     sep = "&" if "?" in base else "?"
     db_url = f"{base}{sep}sslmode=disable"
@@ -21,7 +29,14 @@ def _create_pool() -> AsyncConnectionPool:
 
 
 def get_checkpointer() -> AsyncPostgresSaver:
-    """获取异步检查点"""
+    """获取异步检查点保存器。
+
+    Returns:
+        AsyncPostgresSaver: 绑定在进程内连接池上的检查点保存器。
+
+    Note:
+        本函数只在连接池不存在时创建连接池, 不负责打开。
+    """
     global _pool
     if _pool is None:
         _pool = _create_pool()
@@ -29,7 +44,7 @@ def get_checkpointer() -> AsyncPostgresSaver:
 
 
 async def setup_checkpoint() -> None:
-    """初始化检查点"""
+    """打开连接池并初始化检查点所需的表结构。"""
     global _pool
     if _pool is None:
         _pool = _create_pool()
@@ -38,7 +53,7 @@ async def setup_checkpoint() -> None:
 
 
 async def close_checkpoint() -> None:
-    """关闭连接池"""
+    """关闭连接池。"""
     global _pool
     if _pool is not None:
         await _pool.close()  # 关闭连接池

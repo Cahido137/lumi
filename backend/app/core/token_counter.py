@@ -1,4 +1,14 @@
-"""模型输出token计数器"""
+"""上下文 token 计数器。
+
+将优先以 assistant 消息返回的 usage_metadata 元数据信息为锚点做token计数。
+每个锚点的 input_tokens 为调用时实际读入的总量, 相邻锚点之差即为区间增量, 再按照权重分摊到区间内的各条消息上。
+output_token 为锚点自身的占用量。
+如果无法取得 usage_metadata, 则整体降级为按字符数粗略估计。
+
+Note:
+    ContextTokenReport 报告中的 has_usage 字段标记此次统计是精确的还是粗估的,
+    messages 字段中每条 MessageTokens 中的 exact 字段是标记该条消息是否为精确统计。
+"""
 
 import json
 import math
@@ -11,29 +21,30 @@ from pydantic import BaseModel, Field
 
 from app.schemas.enums import MessageRole
 
-# 估算的 字符/token
 _CHARS_PER_TOKEN = 4.0
+"""粗估时每个 token 折算的字符数。"""
 
-# 每条消息的框架开销
 _PER_MESSAGE_OVERHEAD = 3
+"""粗估时每条消息的框架开销。"""
 
-# 前缀合理性守卫
 _PREFIX_GUARD_FACTOR = 5.0
+"""守卫B: 首锚点前到账目余额相对粗估值允许的最大倍数。"""
+
 _PREFIX_GUARD_SLACK = 1024
+"""守卫B: 在倍数之外允许的绝对松弛量。"""
 
 
-# 消息角色的枚举映射关系
 _TYPE_TO_ROLE = {
     "system": MessageRole.SYSTEM,
     "human": MessageRole.USER,
     "ai": MessageRole.ASSISTANT,
     "tool": MessageRole.TOOL,
 }
+"""LangChain 消息类型到 MessageRole 枚举类型的映射。"""
 
 
-# 上下文token计数模型类
 class MessageTokens(BaseModel):
-    """单条message的token计数结构"""
+    """单条message的token计数结构。"""
 
     message_id: str | None = Field(None, description="消息id")
     role: MessageRole = Field(..., description="消息角色")
@@ -42,7 +53,7 @@ class MessageTokens(BaseModel):
 
 
 class ContextTokenReport(BaseModel):
-    """整份上下文统计报告"""
+    """整份上下文统计报告。"""
 
     total: int = Field(..., description="下一次模型调用的预计输入")
     by_role: dict[str, int] = Field(default_factory=dict, description="按消息角色统计token")
@@ -52,14 +63,28 @@ class ContextTokenReport(BaseModel):
 
 
 def estimate_tokens(text: str) -> int:
-    """粗略估计一段文本的token数"""
+    """粗略估计一段文本的 token 数。
+
+    Args:
+        text: 待估计的文本。
+
+    Returns:
+        int: 估计的 token 数, 空文本为 0, 非空文本至少为 1, 向上取整。
+    """
     if not text:
         return 0
     return max(1, math.ceil(len(text) / _CHARS_PER_TOKEN))  # 粗略计算token数，向上取整
 
 
 def estimate_tool_schema_tokens(tools: Sequence | None) -> int:
-    """估算工具定义的固定开销"""
+    """估算工具定义的固定 token 开销。
+
+    Args:
+        tools: 当前图绑定的工具列表, 可空。
+
+    Returns:
+        int: 工具 schema 序列化后的估计 token 数, 无工具时为 0。
+    """
     if not tools:
         return 0
     schemas = [convert_to_openai_tool(t) for t in tools]  # 转化成openai工具列表形式
@@ -67,14 +92,28 @@ def estimate_tool_schema_tokens(tools: Sequence | None) -> int:
 
 
 def _content_str(msg: BaseMessage) -> str:
-    """安全取出消息正文信息"""
+    """安全取出消息正文信息, 非字符串内容序列化为 JSON。
+
+    Args:
+        msg: LangChain 消息。
+
+    Returns:
+        str: 消息正文的字符串形式。
+    """
     if isinstance(msg.content, str):
         return msg.content
     return json.dumps(msg.content, ensure_ascii=False, default=str)
 
 
 def _char_weight(msg: BaseMessage) -> int:
-    """一条消息的字符权重计算"""
+    """计算一条消息用于分摊的字符权重。
+
+    Args:
+        msg: LangChain 消息。
+
+    Returns:
+        int: 正文字符数加上 tool_calls 与 tool_call_id 的序列化长度, 至少为 1。
+    """
     chars = len(_content_str(msg))
     # 只有AIMessage有tool_calls字段
     tool_calls = getattr(msg, "tool_calls", None)
@@ -88,7 +127,14 @@ def _char_weight(msg: BaseMessage) -> int:
 
 
 def _approx_message_tokens(msg: BaseMessage) -> int:
-    """粗略估计单条消息的总占用"""
+    """粗略估计单条消息的总占用 token 数。
+
+    Args:
+        msg: LangChain 消息。
+
+    Returns:
+        int: 正文与 tool_calls 的估计 token 数加上每条消息的框架开销。
+    """
     text = _content_str(msg)
     tool_calls = getattr(msg, "tool_calls", None)
     if tool_calls:
@@ -97,7 +143,15 @@ def _approx_message_tokens(msg: BaseMessage) -> int:
 
 
 def _allocate(total: int, weights: list[int]) -> list[int]:
-    """把一段已知的token总量按权重比例拆分成整数份额"""
+    """把一段已知的 token 总量按权重比例拆分成整数份额。
+
+    Args:
+        total: 待拆分的 token 总量。
+        weights: 各份额的权重, 长度即份额数。
+
+    Returns:
+        list[int]: 整数份额列表, 份额总额严格等于 total, weights 为空时返回空列表。
+    """
     if not weights:
         return []
     if total <= 0:
@@ -109,15 +163,17 @@ def _allocate(total: int, weights: list[int]) -> list[int]:
 
 
 def count_context_tokens(messages: Sequence[BaseMessage], tools: Sequence | None = None) -> ContextTokenReport:
-    """
-    统计当前上下文的token占用, 给出完整报告
+    """统计当前上下文的 token 占用, 给出完整报告。
 
     Args:
-        messages: LangGraph state 中的全量消息
-        tools: 当前图绑定的工具列表
+        messages: LangGraph state 中的全量消息。
+        tools: 当前图绑定的工具列表, 可空。
 
     Returns:
-        返回完整的上下文报告
+        ContextTokenReport: 完整统计报告。
+
+    Note:
+        本函数中守卫检查不通过也会导致降级成粗估。
     """
     msgs = convert_to_messages(messages)
     n = len(msgs)
