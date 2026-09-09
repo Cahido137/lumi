@@ -212,6 +212,7 @@ npx -y --registry=https://registry.npmmirror.com @mermaid-js/mermaid-cli -i /tmp
 | `/api/sessions` | 会话管理、聊天、消息历史、重试、打断、上下文压缩与用量 |
 | `/api/approvals` | 审批决定(批准 / 拒绝) |
 | `/api/ws/{session_id}` | WebSocket 事件流(JWT 通过 query 参数 `token` 传递) |
+| `/api/health` | 存活探针、就绪探针与深度体检(不鉴权, 供容器编排与监控系统调用) |
 
 ## 设计决策
 

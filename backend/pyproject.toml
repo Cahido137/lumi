@@ -19,13 +19,13 @@ dependencies = [
     "pydantic-settings",
     "pyjwt",
     "bcrypt",
+    "httpx",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
     "pytest-asyncio",
-    "httpx",
     "ruff>=0.16.6",
     "mypy>=2.3.1",
 ]
