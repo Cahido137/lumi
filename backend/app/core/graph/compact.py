@@ -1,3 +1,9 @@
+"""上下文压缩节点与压缩中间件工厂。
+
+Note:
+    本模块的压缩会先将开头的系统提示词剥离, 不参与压缩, 压缩结束后会加回开头。
+"""
+
 import logging
 from dataclasses import dataclass, field
 from uuid import uuid4
@@ -15,13 +21,30 @@ logger = logging.getLogger(__name__)
 
 
 def _middleware_token_counter(messages) -> int:
-    """token计数器中间件形式"""
+    """token 计数器中间件形式。
+
+    Args:
+        messages: 中间件传入的消息序列。
+
+    Returns:
+        int: 消息列表的估计输入 token 总量。
+    """
     msg_list = [m for m in messages if isinstance(m, BaseMessage)]
     return count_context_tokens(msg_list).total
 
 
 def _build_middleware(trigger) -> SummarizationMiddleware:
-    """中间件构建工厂"""
+    """中间件构建工厂, 用于构建压缩中间件。
+
+    Args:
+        trigger: 中间件的触发条件。
+
+    Returns:
+        SummarizationMiddleware: 配置好的压缩中间件。
+
+    Note:
+        自动压缩中间件应传入 token 阈值, 手动压缩中间件应传入消息条数阈值。
+    """
     limits = get_compact_limits()
     return SummarizationMiddleware(
         model=get_chat_model(),
@@ -33,28 +56,35 @@ def _build_middleware(trigger) -> SummarizationMiddleware:
 
 
 def get_auto_compact_middleware() -> SummarizationMiddleware:
-    """获取自动压缩上下文中间件, 上下文到达阈值自动触发"""
+    """获取自动压缩上下文中间件, 上下文到达阈值自动触发。"""
     limits = get_compact_limits()
     return _build_middleware(trigger=("tokens", limits.trigger_tokens))
 
 
 def get_manual_compact_middleware() -> SummarizationMiddleware:
-    """获取手动压缩上下文中间件, 只要存在至少一条消息就可以进行压缩"""
+    """获取手动压缩上下文中间件, 只要存在至少一条消息就可以进行压缩。"""
     return _build_middleware(trigger=("messages", 1))
 
 
 @dataclass
 class CompactionOutcome:
-    """一次成功压缩的细节"""
+    """一次成功压缩的细节。"""
 
-    summary_message: BaseMessage  # 生成的摘要消息
-    preserved_messages: list[BaseMessage]  # 原样保留的消息列表
+    summary_message: BaseMessage
+    """生成的摘要消息。"""
+
+    preserved_messages: list[BaseMessage]
+    """原样保留、未被摘要压缩的消息列表。"""
+
     covered_ids: list[str] = field(default_factory=list)
+    """被摘要覆盖的消息 id 列表。"""
 
 
 def _split_system_messages(messages: list[BaseMessage]) -> tuple[list[BaseMessage], list[BaseMessage]]:
-    """
-    抽取出开头连续的系统提示词, 将其分离开来
+    """抽取出开头连续的系统提示词, 将其分离开来。
+
+    Args:
+        messages: 待分离的消息列表。
 
     Returns:
         (开头的系统提示词, 除开开头系统提示词之外的消息列表)
@@ -71,7 +101,11 @@ def _split_system_messages(messages: list[BaseMessage]) -> tuple[list[BaseMessag
 
 
 def _ensure_ids(messages: list[BaseMessage]) -> None:
-    """确保每条消息都有id, 没有的现场创建id"""
+    """确保每条消息都有id, 没有的现场创建id。
+
+    Args:
+        messages: 消息列表。
+    """
     for msg in messages:
         if not msg.id:
             msg.id = str(uuid4())
@@ -80,7 +114,18 @@ def _ensure_ids(messages: list[BaseMessage]) -> None:
 async def run_compaction(
     middleware: SummarizationMiddleware, messages: list[BaseMessage]
 ) -> tuple[list[BaseMessage], CompactionOutcome] | None:
-    """使用给定的上下文压缩中间件执行一次压缩"""
+    """使用给定的上下文压缩中间件执行一次压缩。
+
+    Args:
+        middleware: 压缩中间件实例。
+        messages: 待压缩的完整消息列表。
+
+    Returns:
+        (压缩后的消息列表, 压缩细节)。中间件判定无需压缩时返回 None。
+
+    Note:
+        开头的连续系统提示词会在压缩前被剥离, 不进行压缩, 压缩完成后再拼接回消息列表开头。
+    """
     # 剥离开系统提示词防止一起被压缩
     protected, rest = _split_system_messages(messages)
     if not rest:
@@ -107,7 +152,18 @@ async def run_compaction(
 
 
 async def compact_node(state: AgentState) -> StateUpdate:
-    """上下文压缩节点"""
+    """上下文压缩节点, 当上下文超过指定阈值时自动触发上下文压缩。
+
+    Args:
+        state: 图状态。
+
+    Returns:
+        StateUpdate: 含替换后的消息与压缩元数据, 无需压缩或压缩失败时返回空字典。
+
+    Note:
+        消息的替换通过使用 RemoveMessage(REMOVE_ALL_MESSAGES) 移除所有消息再追加压缩后的消息实现。
+        压缩执行失败会返回空。
+    """
     middleware = get_auto_compact_middleware()
     before_tokens = count_context_tokens(state["messages"]).total  # 得到压缩前的上下文token数
     try:

@@ -1,3 +1,9 @@
+"""Agent 图的节点实现与图的组装编译。
+
+Note:
+    导入本模块会自动创建主模型实例(_model)并绑定工具(_model_with_tools)。
+"""
+
 import logging
 from typing import Literal
 from uuid import uuid4
@@ -25,23 +31,31 @@ from app.core.tools.todo_tool import TODO_DONE_TOOL, TODO_MARKER_TOOLS
 from app.schemas.enums import ApprovalStatus, TodoStatus
 from app.schemas.todos import TodoItem
 
-# 需要审批的工具列表
 APPROVAL_REQUIRED_TOOLS = ["run_shell", "write_file"]
+"""需要审批的工具名列表。"""
 
-# 构建工具名称映射字典列表
 TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
+"""工具名到工具实例的映射字典。"""
 
 logger = logging.getLogger(__name__)
 
 
-# 获得模型
 _model = get_chat_model()
-# 绑定工具
+"""主模型 (未绑定工具)。"""
+
 _model_with_tools = _model.bind_tools(tools=TOOLS)
+"""主模型 (已绑定工具)。"""
 
 
 def _find_tool_call_message(state: AgentState):
-    """找到最近一条携带tool_call的AIMessage"""
+    """倒序找到最近一条携带 tool_call 的 AIMessage。
+
+    Args:
+        state: 图状态。
+
+    Returns:
+        查找到的 AIMessage, 未查找到返回 None。
+    """
     # 倒序开始寻找
     for msg in reversed(state.get("messages") or []):
         if getattr(msg, "tool_calls", None):
@@ -50,7 +64,15 @@ def _find_tool_call_message(state: AgentState):
 
 
 async def _invoke_planner(planner_llm, prompt_messages):
-    """调用规划器, 失败记日志并返回None"""
+    """调用规划器, 失败记日志并返回 None。
+
+    Args:
+        planner_llm: 已绑定结构化输出的规划器模型。
+        prompt_messages: 提示词消息列表。
+
+    Returns:
+        调用成功后的结构化输出, 调用或结构化解析失败时返回 None。
+    """
     try:
         return await planner_llm.ainvoke(prompt_messages)
     except Exception:
@@ -59,7 +81,20 @@ async def _invoke_planner(planner_llm, prompt_messages):
 
 
 async def planner_node(state: AgentState) -> StateUpdate:
-    """计划器节点"""
+    """计划器节点: 把本轮消息拆解成计划列表。
+
+    Args:
+        state: 图全局状态。
+
+    Returns:
+        StateUpdate: 含有新计划列表的部分更新, 没有变更时返回空字典。
+
+    Note:
+        当已存在计划时会将旧计划一并交给规划器, 由其决定沿用旧计划(返回空列表)或新建。
+        新建的步骤使用新 id, 图状态内按 id upsert, 旧步骤不会被移除;
+        数据库侧的计划列表由会话运行器整表替换, 与图内合并语义无关。
+        规划器调用或结构化解析失败后重试一次; 仍失败时沿用旧计划, 无旧计划则返回空列表。
+    """
     task = state["messages"][-1].content  # 拿到用户的消息
     existing_todos = sorted(state.get("todos") or [], key=lambda x: x.position)
 
@@ -99,7 +134,17 @@ async def planner_node(state: AgentState) -> StateUpdate:
 
 
 async def model_node(state: AgentState) -> StateUpdate:
-    """大模型节点"""
+    """大模型节点: 调用绑定工具的大模型, 负责产出工具调用和回复, 核心节点。
+
+    Args:
+        state: 全局图状态。
+
+    Returns:
+        StateUpdate: 仅返回 messages 字段, 包含模型生成的 AIMessage。
+
+    Note:
+        仅当计划存在时才注入计划上下文至系统消息。
+    """
     todos = sorted(state.get("todos") or [], key=lambda x: x.position)
     messages = state["messages"]
     # 仅当存在计划时才注入计划上下文
@@ -115,7 +160,18 @@ async def model_node(state: AgentState) -> StateUpdate:
 
 
 async def precheck_node(state: AgentState) -> StateUpdate:
-    """预审批节点, 负责标记下一条需要人工审批的工具调用"""
+    """预审批节点, 负责标记下一条需要人工审批的工具调用。
+
+    Args:
+        state: 全局图状态。
+
+    Returns:
+        StateUpdate: 含有 pending_tool_call_id, 如果没有待审批的调用则返回 None。
+
+    Note:
+        此节点每次只会逐个审批工具调用。
+        遇到无需审批的工具、已经做过审批的工具、先前已经授权过的直接跳过。
+    """
     msg = _find_tool_call_message(state)  # 先看有没有带有tool_call_id的消息
     if msg is None:
         return {}
@@ -139,7 +195,18 @@ async def precheck_node(state: AgentState) -> StateUpdate:
 
 
 async def approval_node(state: AgentState) -> StateUpdate:
-    """审批节点, 负责为指定pending_tool_call_id的工具发起或者恢复审批中断"""
+    """审批节点, 负责为指定 pending_tool_call_id 的工具发起或者恢复审批中断。
+
+    Args:
+        state: 全局图状态。
+
+    Returns:
+        StateUpdate: 以 pending_tool_call_id 为键把审批决定写入 tool_decisions, 并清空 pending_tool_call_id。
+
+    Note:
+        此节点调用 interrupt() 进行中断, 中断恢复后从此节点往下执行。
+        如果没有 pending_tool_call_id, 此节点不会产生中断, 会直接透传。
+    """
     pending = state.get("pending_tool_call_id")
     if not pending:
         return {}
@@ -155,7 +222,20 @@ async def approval_node(state: AgentState) -> StateUpdate:
 
 
 async def exec_node(state: AgentState) -> StateUpdate:
-    """工具执行节点"""
+    """工具执行节点, 负责执行本轮模型消息中已经受批准的工具调用。
+
+    Args:
+        state: 全局图状态。
+
+    Returns:
+        StateUpdate: 工具结果消息、已执行 id 账目、入参快照, 以及可能的 todos 更新。
+
+    Note:
+        本节点会根据 tool_call_id, 跳过已经执行过的工具调用, 防止工具的重复调用。
+        工具执行异常会回填 status 字段为 error, 告知模型。
+        被拒绝的调用不会执行, 同样回填 status 字段为 error, 告知模型。
+        需要审批但是还没有进行审批的会在本节点跳过, 等到审批后再进入本节点。
+    """
     msg = _find_tool_call_message(state)
     if msg is None:
         return {}
@@ -226,7 +306,11 @@ async def exec_node(state: AgentState) -> StateUpdate:
 
 
 def router_after_model(state: AgentState) -> Literal["precheck_node", "__end__"]:
-    """模型输出后路由"""
+    """模型输出后路由。
+
+    模型消息带有工具调用则进入预审批节点;
+    模型消息不带有工具调用、纯文本回复则结束本轮图运行并输出结果。
+    """
     last_msg = state["messages"][-1]
     if getattr(last_msg, "tool_calls", None):
         return "precheck_node"
@@ -234,7 +318,11 @@ def router_after_model(state: AgentState) -> Literal["precheck_node", "__end__"]
 
 
 def router_after_exec(state: AgentState) -> Literal["precheck_node", "compact_node"]:
-    """执行节点后路由"""
+    """执行节点后路由。
+
+    本轮最近一条 AIMessage 中携带的工具调用全部执行完毕后跳转至压缩节点开启下一轮思考,
+    否则会到预审批节点, 直到执行完所有工具调用。
+    """
     msg = _find_tool_call_message(state)
     executed = state.get("executed_tool_call_ids") or []
     # 如果工具调用消息不为空并且所有的tool_call都执行完毕了
@@ -244,7 +332,17 @@ def router_after_exec(state: AgentState) -> Literal["precheck_node", "compact_no
 
 
 def build_agent_graph(checkpointer=None):
-    """组装图"""
+    """组装并编译 Agent 图。
+
+    Args:
+        checkpointer: LangGraph 检查点保存器, 可空。
+
+    Returns:
+        编译后的可执行图。
+
+    Note:
+        当 checkpointer 为 None 时, 图不支持中断。
+    """
     builder = StateGraph(state_schema=AgentState, input_schema=InputState, output_schema=OutputState)
     builder.add_node("planner_node", planner_node)
     builder.add_node("compact_node", compact_node)
