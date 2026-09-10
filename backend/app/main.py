@@ -21,7 +21,16 @@ setup_logging(get_logsettings().log_level)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """生命周期钩子"""
+    """生命周期钩子。
+
+    启动时初始化检查点, 关闭时关闭检查点连接池。
+
+    Args:
+        app: FastAPI 应用实例。
+
+    Yields:
+        None: 应用运行期。
+    """
     await setup_checkpoint()  # 初始化检查表
     logger.info("检查点已初始化")
     # 运行中

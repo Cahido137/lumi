@@ -1,4 +1,4 @@
-"""审批相关路由"""
+"""审批相关路由。"""
 
 from uuid import UUID
 
@@ -23,7 +23,19 @@ async def decide_approval(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """处理审批决定"""
+    """对指定审批单做出审批, 并恢复被中断的图执行。
+
+    Returns:
+        JSONResponse: 三段式信封。
+        恢复后如果再次触发审批, data 为 None 且 message 提示等待审批;
+        若本轮执行完成, data 传递 reply 字段;
+        若恢复过程被打断, data 为 None 且 message 为打断说明。
+
+    Raises:
+        HTTPException 401: 未登录或令牌无效。
+        HTTPException 404: 审批单不存在或不属于当前用户。
+        HTTPException 400: 审批单已被处理, 或非法的状态值。
+    """
     await get_owned_approval_or_404(db, str(approval_id), current_user)
     try:
         reply = await resume_agent_session(str(approval_id), ApprovalStatus(request.status), request.scope)

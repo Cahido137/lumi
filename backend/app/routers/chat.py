@@ -1,4 +1,4 @@
-"""聊天相关路由"""
+"""聊天相关路由。"""
 
 from uuid import UUID
 
@@ -33,7 +33,16 @@ async def chat(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """收到消息并运行 Agent"""
+    """向指定会话发送一条消息, 阻塞等待本轮 Agent 运行结束。
+
+    Returns:
+        JSONResponse: 三段式信封, data 载荷为 ChatResponse。
+
+    Raises:
+        HTTPException 401: 未登录或令牌无效。
+        HTTPException 404: 会话不存在或不属于当前用户。
+        HTTPException 409: 该会话存在未完成的审批, 应该先处理审批。
+    """
     # 校验会话ID是否存在
     await get_owned_session_or_404(db, str(session_id), current_user)
 
@@ -67,7 +76,15 @@ async def list_messages(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """分页获取历史消息列表"""
+    """分页获取指定会话的历史消息, 按时间倒序返回。
+
+    Returns:
+        JSONResponse: 三段式信封, data 载荷为 MessageListResponse。
+
+    Raises:
+        HTTPException 401: 未登录或令牌无效。
+        HTTPException 404: 会话不存在或不属于当前用户。
+    """
     await get_owned_session_or_404(db, str(session_id), current_user)
     skip = (page - 1) * page_size
     messages = await messages_crud.list_messages(db, str(session_id), skip, page_size)
@@ -92,7 +109,16 @@ async def list_messages(
 async def cancel_run(
     session_id: UUID, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    """打断当前正在运行的对话"""
+    """打断指定会话当前正在运行的对话。
+
+    Returns:
+        JSONResponse: 三段式信封, data 载荷为 CancelResponse。
+        cancelled 字段为 False 时表示当前没有正在运行的对话。
+
+    Raises:
+        HTTPException 401: 未登录或令牌无效。
+        HTTPException 404: 会话不存在或指定会话不属于当前用户。
+    """
     await get_owned_session_or_404(db, str(session_id), current_user)
     cancelled = request_cancel_session(str(session_id))  # 发送打断请求
     return success_response(
@@ -109,7 +135,18 @@ async def retry_message(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """重新运行对话"""
+    """以编辑后的内容重新运行指定用户消息及其后续轮次。
+
+    Returns:
+        JSONResponse: 三段式信封, data 载荷为 ChatResponse。
+
+    Raises:
+        HTTPException 401: 未登录或令牌无效。
+        HTTPException 404: 会话或消息不存在、消息非用户消息、此消息后已有新对话。
+
+    Note:
+        重试会删除该消息之后的全部消息、审批单与工具执行记录, 并清空会话摘要。
+    """
     await get_owned_session_or_404(db, str(session_id), current_user)
     try:
         ai_message = await retry_agent_session(str(session_id), str(message_id), request.content)  # 重新运行

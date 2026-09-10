@@ -1,4 +1,4 @@
-"""上下文管理相关路由"""
+"""上下文用量与压缩相关路由。"""
 
 from uuid import UUID
 
@@ -26,7 +26,18 @@ router = APIRouter(prefix="/api/sessions", tags=["context"])
 async def get_context_usage(
     session_id: UUID, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    """查询指定会话的当前上下文用量"""
+    """查询指定会话的当前上下文用量与各级阈值。
+
+    Returns:
+        JSONResponse: 三段式信封, data 载荷为 ContextUsageResponse。
+
+    Raises:
+        HTTPException 401: 未登录或令牌无效。
+        HTTPException 404: 会话不存在或不属于当前用户。
+
+    Note:
+        用量数据仅统计已落库的消息, 不统计运行中的尚未落库的消息内容。
+    """
     await get_owned_session_or_404(db, str(session_id), current_user)
     limits = get_compact_limits()
     history = await rebuild_history(db, str(session_id))
@@ -51,7 +62,18 @@ async def get_context_usage(
 async def compact_context(
     session_id: UUID, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    """手动触发上下文压缩"""
+    """手动触发指定会话的上下文压缩。
+
+    Returns:
+        JSONResponse: 三段式信封, data 载荷为 ContextCompactResponse。
+        上下文判定为无需压缩时, before 与 after 字段相同且 summarizedMessageCount 为 0。
+
+    Raises:
+        HTTPException 401: 未登录或令牌无效。
+        HTTPException 404: 会话不存在或不属于当前用户。
+        HTTPException 409: 会话正在运行中, 不允许压缩。
+        HTTPException 500: 压缩失败。
+    """
     await get_owned_session_or_404(db, str(session_id), current_user)
     # 会话正在运行时直接拒绝压缩
     if is_session_running(str(session_id)):

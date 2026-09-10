@@ -1,4 +1,4 @@
-"""会话相关路由"""
+"""会话相关路由。"""
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +26,14 @@ Note:
 async def create_session(
     request: SessionCreateRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
-    """创建会话请求"""
+    """创建一个新的空会话。
+
+    Returns:
+        JSONResponse: 三段式信封, data 载荷为 SessionCreateResponse。
+
+    Raises:
+        HTTPException 401: 用户未登录或令牌无效。
+    """
     session = await sessions_crud.create_session(db, request.title or DEFAULT_TITLE, current_user.id)
     return success_response(message="会话创建成功", data=SessionCreateResponse.model_validate(session))
 
@@ -38,7 +45,14 @@ async def list_sessions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取分页会话列表"""
+    """分页获取当前用户的会话列表, 按更新时间倒序。
+
+    Returns:
+        JSONResponse: 三段式信封, data 载荷为 SessionListResponse。
+
+    Raises:
+        HTTPException 401: 未登录或令牌失效。
+    """
     skip = (page - 1) * page_size  # 由页码换算查询偏移量
     sessions = await sessions_crud.list_sessions(db, current_user.id, skip, page_size)
     session_list = [

@@ -1,4 +1,4 @@
-"""WebSocket 路由相关"""
+"""WebSocket 路由相关。"""
 
 import asyncio
 import logging
@@ -20,7 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 async def _send_loop(websocket: WebSocket, queue: asyncio.Queue) -> None:
-    """从事件总线推送消息"""
+    """把事件总线队列中的事件逐条推送给 WebSocket 客户端。
+
+    Args:
+        websocket: 已握手的 WebSocket 连接。
+        queue: 该连接的事件订阅队列。
+    """
     while True:
         event = await queue.get()  # 从队列取事件
         await websocket.send_json(event.model_dump(mode="json", by_alias=True))
@@ -28,7 +33,17 @@ async def _send_loop(websocket: WebSocket, queue: asyncio.Queue) -> None:
 
 @router.websocket("/{session_id}")
 async def websocket_chat(websocket: WebSocket, session_id: UUID):
-    """实时聊天"""
+    """建立指定会话的 WebSocket 事件流。
+
+    Note:
+        JWT 通过 query 参数 token 传递而不是 Authorization 头。
+        连接建立后, 客户端发送的每一条文本消息都会触发一轮 Agent 运行。
+        连接断开后, 会取消该会话正在运行的任务。
+
+        关闭码:
+            4401: 缺少 token、token 校验失败或用户不存在。
+            4404: 会话不存在或不属于该用户。
+    """
     sid = str(session_id)
     token = websocket.query_params.get("token")
     if not token:
