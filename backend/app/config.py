@@ -97,6 +97,15 @@ class LogSettings(BaseSettings):
     """是否打印SQL语句。默认为 False。"""
 
 
+class OpsSettings(BaseSettings):
+    """运维与诊断信息配置信息。"""
+
+    model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", env_file_encoding="utf-8", extra="ignore")
+
+    debug_error_detail: bool = Field(False, description="错误响应是否要携带异常类型与堆栈信息")
+    """错误响应是否要附带调试信息。"""
+
+
 class CompactSettings(BaseSettings):
     """上下文压缩配置信息。
 
@@ -189,6 +198,16 @@ def get_logsettings() -> LogSettings:
         LogSettings: 进程内唯一配置实例。
     """
     return LogSettings()
+
+
+@lru_cache
+def get_opssettings() -> OpsSettings:
+    """获得运维与诊断配置单例。
+
+    Returns:
+        OpsSettings: 进程内唯一配置实例。
+    """
+    return OpsSettings()
 
 
 @lru_cache
