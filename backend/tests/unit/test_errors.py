@@ -6,14 +6,20 @@ import app.utils.exception as exception_module
 import httpx
 import pytest
 from app.config import OpsSettings
+from app.schemas.auth import LoginRequest
+from app.schemas.chat import ChatRequest
 from app.utils.errors import ConflictError, Error, NotFoundError, WorkspaceViolation
 from app.utils.exception import (
+    MAX_FIELD_ERRORS,
+    _format_loc,
     business_error_handler,
     general_exception_handler,
     integrity_error_handler,
+    request_validation_handler,
     sqlalchemy_error_handler,
 )
 from app.utils.exception_handlers import register_exception_handlers
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.requests import Request
 
@@ -338,3 +344,212 @@ async def test_sqlalchemy_handler_can_format_traceback_inside_middleware(monkeyp
     assert body["message"] == "数据库操作错误"
     assert body["data"]["error_type"] == "SQLAlchemyError"
     assert "connection reset by peer" in body["data"]["traceback"]
+
+
+# ── 处理器: 请求校验失败 ─────────────────────────────────────────────────────
+
+_PASSWORD_ERROR = {
+    "type": "string_too_long",
+    "loc": ("body", "password"),
+    "msg": "String should have at most 72 characters",
+    "input": "P@ssw0rd-Secret-明文",
+    "ctx": {"max_length": 72},
+}
+"""构造校验异常用的单条错误项。
+
+Note:
+    形态与登录接口密码超长时 pydantic 的实际产出一致,
+    其中 input 是用户提交的明文密码, 用于验证它不会出现在响应里。
+"""
+
+
+def _validation_error(errors: list) -> RequestValidationError:
+    """构造一个带指定错误列表的请求校验异常"""
+    return RequestValidationError(errors)
+
+
+def _build_validation_app():
+    """构造挂载真实请求模型的校验应用, 用于端到端验证 422 信封
+
+    Note:
+        与 _build_app 分开, 避免为校验用例给业务异常应用挂上无关路由。
+        RequestValidationError 由 ExceptionMiddleware 处理且处理后不重新抛出,
+        因此可以直接用 httpx.ASGITransport 读到响应体。
+    """
+    from fastapi import FastAPI, Query
+
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.post("/login")
+    async def login(body: LoginRequest):
+        """真实登录请求体, 密码长度上限 72"""
+        return {"ok": True}
+
+    @app.post("/chat")
+    async def chat(body: ChatRequest):
+        """真实对话请求体, content 长度上限 8000"""
+        return {"ok": True}
+
+    @app.get("/messages")
+    async def messages(page_size: int = Query(20, alias="pageSize", ge=1, le=100)):
+        """带查询参数约束的路由, 用于验证 loc 的 query 前缀"""
+        return {"ok": page_size}
+
+    return app
+
+
+async def _request(app, method: str, path: str, **kwargs) -> httpx.Response:
+    """通过 ASGITransport 对指定应用发起一次进程内请求"""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        return await client.request(method, path, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("loc", "expected"),
+    [
+        (("body", "content"), "body.content"),
+        (("query", "pageSize"), "query.pageSize"),
+        (("body", "items", 3, "name"), "body.items[3].name"),
+        (("body", 1), "body[1]"),  # 请求体不是合法 JSON 时 pydantic 给的是字符偏移量
+        ((), "(unknown)"),
+    ],
+)
+def test_format_loc_normalizes_int_segments(loc, expected):
+    """loc 中的整数应写成下标形式, 不能与对象键名混在一起"""
+    assert _format_loc(loc) == expected
+
+
+async def test_validation_handler_envelope_shape(monkeypatch):
+    """校验失败应返回三段式信封, data 中携带稳定错误码与字段列表"""
+    _patch_debug(monkeypatch, enabled=False)
+    response = await request_validation_handler(_make_request("/api/auth/login"), _validation_error([_PASSWORD_ERROR]))
+    body = json.loads(response.body)
+    assert response.status_code == 422
+    assert body["code"] == 422
+    assert body["message"] == "请求参数校验失败"
+    assert body["data"] == {
+        "error_code": "validation_error",
+        "fields": [
+            {
+                "loc": "body.password",
+                "type": "string_too_long",
+                "msg": "String should have at most 72 characters",
+            }
+        ],
+        "error_count": 1,
+        "truncated": False,
+    }
+
+
+async def test_validation_handler_never_echoes_raw_input(monkeypatch):
+    """调试关闭时, 响应中不得出现用户提交的原始值(此处为明文密码)"""
+    _patch_debug(monkeypatch, enabled=False)
+    response = await request_validation_handler(_make_request("/api/auth/login"), _validation_error([_PASSWORD_ERROR]))
+    text = response.body.decode()
+    assert "P@ssw0rd-Secret-明文" not in text
+    assert "input" not in json.loads(response.body)["data"]["fields"][0]
+
+
+async def test_validation_handler_never_echoes_ctx_when_debug_off(monkeypatch):
+    """调试关闭时, ctx 中的约束参数也不应出现"""
+    _patch_debug(monkeypatch, enabled=False)
+    response = await request_validation_handler(_make_request(), _validation_error([_PASSWORD_ERROR]))
+    data = json.loads(response.body)["data"]
+    assert "ctx" not in data
+    assert "max_length" not in response.body.decode()
+
+
+async def test_validation_handler_exposes_raw_errors_when_debug_on(monkeypatch):
+    """调试开启时才返回 pydantic 原始错误列表, 且 fields 中始终不含原始值"""
+    _patch_debug(monkeypatch, enabled=True)
+    response = await request_validation_handler(_make_request(), _validation_error([_PASSWORD_ERROR]))
+    data = json.loads(response.body)["data"]
+    assert data["error_code"] == "validation_error"
+    assert data["raw_errors"][0]["input"] == "P@ssw0rd-Secret-明文"
+    assert data["fields"][0].get("input") is None
+
+
+async def test_validation_handler_skips_non_dict_entries(monkeypatch):
+    """非字典形态的错误项应被跳过, 而不是让处理器自身抛异常"""
+    _patch_debug(monkeypatch, enabled=False)
+    exc = RequestValidationError([_PASSWORD_ERROR, "not-a-dict", None])  # type: ignore[list-item]
+    data = json.loads((await request_validation_handler(_make_request(), exc)).body)["data"]
+    assert data["error_count"] == 1
+    assert len(data["fields"]) == 1
+
+
+async def test_validation_handler_truncates_field_list(monkeypatch):
+    """字段错误超过上限时应截断, 但 error_count 仍报真实总数"""
+    _patch_debug(monkeypatch, enabled=False)
+    total = MAX_FIELD_ERRORS + 70
+    many = [{"type": "missing", "loc": ("body", "items", i, "id"), "msg": "Field required"} for i in range(total)]
+    data = json.loads((await request_validation_handler(_make_request(), _validation_error(many))).body)["data"]
+    assert len(data["fields"]) == MAX_FIELD_ERRORS
+    assert data["error_count"] == total
+    assert data["truncated"] is True
+    assert data["fields"][-1]["loc"] == f"body.items[{MAX_FIELD_ERRORS - 1}].id"
+
+
+def test_register_overrides_fastapi_default_validation_handler():
+    """注册后应覆盖 FastAPI 自带的 422 处理器, 否则信封与回显策略都不生效"""
+    from fastapi import FastAPI
+    from fastapi.exception_handlers import request_validation_exception_handler
+
+    app = FastAPI()
+    register_exception_handlers(app)
+    assert app.exception_handlers[RequestValidationError] is request_validation_handler
+    assert app.exception_handlers[RequestValidationError] is not request_validation_exception_handler
+
+
+async def test_login_password_too_long_returns_envelope_without_plaintext(monkeypatch):
+    """端到端: 密码超长触发 422, 响应为三段式信封且整段响应不含明文密码"""
+    _patch_debug(monkeypatch, enabled=False)
+    plaintext = "P@ssw0rd-超長-" * 20
+    payload = {"username": "alice", "password": plaintext}
+    response = await _request(_build_validation_app(), "POST", "/login", json=payload)
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == 422
+    assert body["message"] == "请求参数校验失败"
+    assert body["data"]["error_code"] == "validation_error"
+    assert body["data"]["fields"][0]["loc"] == "body.password"
+    assert plaintext not in response.text
+    assert "P@ssw0rd" not in response.text
+
+
+async def test_chat_content_too_long_does_not_echo_payload(monkeypatch):
+    """端到端: content 超过 8000 字符触发 422, 且不把超长入参原样吐回"""
+    _patch_debug(monkeypatch, enabled=False)
+    response = await _request(_build_validation_app(), "POST", "/chat", json={"content": "长" * 8001})
+    assert response.status_code == 422
+    data = response.json()["data"]
+    assert data["fields"][0]["type"] == "string_too_long"
+    assert len(response.text) < 2000  # 入参有 8001 个字符, 响应远小于它说明没有被回显
+
+
+async def test_invalid_json_body_uses_bracket_loc(monkeypatch):
+    """端到端: 请求体不是合法 JSON 时, loc 的整数偏移量应写成下标形式"""
+    _patch_debug(monkeypatch, enabled=False)
+    response = await _request(
+        _build_validation_app(),
+        "POST",
+        "/chat",
+        content=b"{bad json",
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 422
+    fields = response.json()["data"]["fields"]
+    assert fields[0]["type"] == "json_invalid"
+    assert fields[0]["loc"].startswith("body[")
+
+
+async def test_query_param_violation_uses_query_loc_prefix(monkeypatch):
+    """端到端: 查询参数越界时 loc 应带 query 前缀"""
+    _patch_debug(monkeypatch, enabled=False)
+    response = await _request(_build_validation_app(), "GET", "/messages", params={"pageSize": 999})
+    assert response.status_code == 422
+    data = response.json()["data"]
+    assert data["error_code"] == "validation_error"
+    assert data["fields"][0]["loc"] == "query.pageSize"
