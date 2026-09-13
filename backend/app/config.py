@@ -6,11 +6,13 @@ Note:
     配置信息为单例模式获取, 使用 lru_cache 缓存结果。如果要修改配置文件需重启进程生效。
 """
 
+import json
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # 根据当前文件位置找到根目录绝对位置
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -104,6 +106,60 @@ class OpsSettings(BaseSettings):
 
     debug_error_detail: bool = Field(False, description="错误响应是否要携带异常类型与堆栈信息")
     """错误响应是否要附带调试信息。"""
+
+
+WORKSPACE_DEFAULT_DENY_PATTERNS: str = ".env,.env.*,.git,.git/*,*.pem,*.key,id_rsa,id_ed25519"
+"""工作区默认拒绝访问的通配模式, 逗号分隔。"""
+
+
+class WorkspaceSettings(BaseSettings):
+    """受限工作区配置信息。
+
+    Note:
+        workspace_root 为空时文件与命令工具全部拒绝执行。
+    """
+
+    model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", env_file_encoding="utf-8", extra="ignore")
+
+    workspace_root: str | None = Field(None, description="工具可读写的工作区根目录绝对路径")
+    """工作区根目录绝对路径。为空时读写工具和终端命令执行工具全部拒绝执行。"""
+
+    workspace_max_read_bytes: int = Field(2 * 1024 * 1024, gt=0, description="单次读取的字节数上限")
+    """单次文件读取的字节上限, 超出即截断并标记。"""
+
+    workspace_max_write_bytes: int = Field(4 * 1024 * 1024, gt=0, description="单次写入的字节数上限")
+    """单次文件写入的字节上限, 超出则拒绝写入且不落盘。"""
+
+    workspace_deny_patterns: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [p for p in WORKSPACE_DEFAULT_DENY_PATTERNS.split(",") if p],
+        description="工作区内仍然拒绝访问的通配模式",
+    )
+    """工作区内仍然拒绝访问的通配模式。"""
+
+    workspace_env_allow: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, description="额外允许透传给工具子进程的环境变量名"
+    )
+    """额外允许透传给工具子进程的环境变量名, 默认为空。"""
+
+    @field_validator("workspace_deny_patterns", "workspace_env_allow", mode="before")
+    @classmethod
+    def _split_csv_patterns(cls, value):
+        """把逗号分隔字符串形式的列表配置解析为字符串列表。
+
+        Args:
+            value: 环境变量或显式传入的原始值, 可以是列表、逗号分隔字符串或 JSON 数组字符串。
+
+        Returns:
+            list[str]: 解析后的列表。
+        """
+        if not isinstance(value, str):
+            return value  # 显式传入列表时直接交给 pydantic 校验
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            return json.loads(text)  # JSON 解析
+        return [item.strip() for item in text.split(",") if item.strip()]  # 逗号分隔字符串
 
 
 class CompactSettings(BaseSettings):
@@ -208,6 +264,16 @@ def get_opssettings() -> OpsSettings:
         OpsSettings: 进程内唯一配置实例。
     """
     return OpsSettings()
+
+
+@lru_cache
+def get_workspacesettings() -> WorkspaceSettings:
+    """获得受限工作区配置单例。
+
+    Returns:
+        WorkspaceSettings: 进程内唯一配置单例。
+    """
+    return WorkspaceSettings()
 
 
 @lru_cache

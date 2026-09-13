@@ -10,6 +10,9 @@ from typing import IO
 
 from langchain_core.tools import tool
 
+from app.core.execution.env import scrubbed_env
+from app.core.execution.workspace import current_workspace
+
 OUTPUT_MAX_LEN = 5000
 DEFAULT_TIMEOUT = 30
 
@@ -173,8 +176,9 @@ def _stop_process(proc: subprocess.Popen, job) -> None:
 @tool(parse_docstring=True)
 def run_shell(command: str, timeout: int = DEFAULT_TIMEOUT) -> str:
     """
-    在系统 shell 中执行一条命令, 用于查看系统信息、运行脚本、管理进程等任务。
+    在受限工作区目录中执行一条 shell 命令, 用于查看系统信息、运行脚本、管理进程等任务。
     命令语法遵循系统自带 shell(Windows 为 cmd, POSIX 为 sh), 不支持交互式输入。
+    子进程的工作目录固定为工作区根目录, 且只能看到白名单内的环境变量。
 
     Args:
         command: 要执行的 shell 命令
@@ -182,7 +186,11 @@ def run_shell(command: str, timeout: int = DEFAULT_TIMEOUT) -> str:
 
     Returns:
         命令退出码、标准输出和标准错误
+
+    Note:
+        cwd 与 env 白名单只约束相对路径落点与密钥泄漏, 不限制命令可访问的文件系统范围。
     """
+    policy = current_workspace()  # 未配置工作区时在此失败关闭, 不创建任何临时文件
     out_fd, out_path = tempfile.mkstemp(prefix="shell_stdout_", suffix=".txt")
     os.close(out_fd)
     err_fd, err_path = tempfile.mkstemp(prefix="shell_stderr_", suffix=".txt")
@@ -196,6 +204,8 @@ def run_shell(command: str, timeout: int = DEFAULT_TIMEOUT) -> str:
         proc = subprocess.Popen(
             command,
             shell=True,
+            cwd=str(policy.root),
+            env=scrubbed_env(),
             stdin=subprocess.DEVNULL,
             stdout=out_file,
             stderr=err_file,
