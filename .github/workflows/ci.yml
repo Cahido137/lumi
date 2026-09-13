@@ -51,7 +51,6 @@ jobs:
       LLM_API_KEY: sk-ci-dummy-key
       LLM_MODEL: gpt-4o-mini
       JWT_SECRET: ci-test-secret-not-for-prod-0123456789
-      WORKSPACE_ROOT: ${{ runner.temp }}
 
     steps:
       - name: 检出代码
@@ -78,4 +77,6 @@ jobs:
         run: uv run mypy app
 
       - name: Pytest 自动化测试
+        env:
+          WORKSPACE_ROOT: ${{ runner.temp }}
         run: uv run pytest -q
