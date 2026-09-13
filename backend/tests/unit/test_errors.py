@@ -1,6 +1,7 @@
 """业务异常基类、错误码载荷与全局异常处理器的单元测试"""
 
 import json
+from typing import Any
 
 import app.utils.exception as exception_module
 import httpx
@@ -24,9 +25,25 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.requests import Request
 
 
+def _payload(response: Any) -> dict:
+    """把响应体解析为信封字典。
+
+    Args:
+        response: 处理器或测试客户端返回的响应对象。
+
+    Returns:
+        dict: 解析后的三段式信封。
+
+    Note:
+        starlette 将 body 标注为 bytes | memoryview, 先包一层 bytes 收敛类型,
+        避免每个断言处都重复处理联合类型。
+    """
+    return json.loads(bytes(response.body))
+
+
 def _make_request(path: str = "/api/test") -> Request:
     """构造一个最小可用的 HTTP Request, 仅供处理器读取 url.path"""
-    scope = {
+    scope: dict[str, Any] = {
         "type": "http",
         "http_version": "1.1",
         "method": "GET",
@@ -191,7 +208,7 @@ async def test_business_handler_envelope_shape(monkeypatch):
     _patch_debug(monkeypatch, enabled=False)
     err = ConflictError("该会话存在未完成的审批", code="pending_approval_exists")
     response = await business_error_handler(_make_request("/api/sessions/x/chat"), err)
-    assert json.loads(response.body) == {
+    assert _payload(response) == {
         "code": 409,
         "message": "该会话存在未完成的审批",
         "data": {"error_code": "pending_approval_exists"},
@@ -201,7 +218,7 @@ async def test_business_handler_envelope_shape(monkeypatch):
 async def test_business_handler_hides_stack_when_debug_off(monkeypatch):
     """调试开关关闭时, 业务异常响应不得携带异常类型与堆栈"""
     _patch_debug(monkeypatch, enabled=False)
-    payload = json.loads((await business_error_handler(_make_request(), NotFoundError())).body)["data"]
+    payload = _payload(await business_error_handler(_make_request(), NotFoundError()))["data"]
     assert "error_type" not in payload
     assert "traceback" not in payload
 
@@ -209,7 +226,7 @@ async def test_business_handler_hides_stack_when_debug_off(monkeypatch):
 async def test_business_handler_exposes_type_when_debug_on(monkeypatch):
     """调试开关开启时, 业务异常响应附带异常类型名"""
     _patch_debug(monkeypatch, enabled=True)
-    payload = json.loads((await business_error_handler(_make_request(), NotFoundError())).body)["data"]
+    payload = _payload(await business_error_handler(_make_request(), NotFoundError()))["data"]
     assert payload["error_type"] == "NotFoundError"
     assert payload["error_code"] == "not_found"
 
@@ -234,7 +251,7 @@ def _integrity_error(raw_message: str) -> IntegrityError:
 async def test_integrity_handler_maps_error_code(raw_message, expected_code, expected_message):
     """完整性约束异常应按驱动层信息分流为稳定的错误码与中文文案"""
     response = await integrity_error_handler(_make_request(), _integrity_error(raw_message))
-    body = json.loads(response.body)
+    body = _payload(response)
     assert response.status_code == 400
     assert body["code"] == 400
     assert body["message"] == expected_message
@@ -244,7 +261,7 @@ async def test_integrity_handler_maps_error_code(raw_message, expected_code, exp
 async def test_integrity_handler_keeps_error_code_when_debug_on(monkeypatch):
     """调试开关开启时, error_code 仍必须保留, 不能只返回调试信息"""
     _patch_debug(monkeypatch, enabled=True)
-    body = json.loads((await integrity_error_handler(_make_request(), _integrity_error("duplicate key value"))).body)
+    body = _payload(await integrity_error_handler(_make_request(), _integrity_error("duplicate key value")))
     assert body["data"]["error_code"] == "duplicate"
     assert body["data"]["error_type"] == "IntegrityError"
 
@@ -253,7 +270,7 @@ async def test_integrity_handler_hides_raw_message_when_debug_off(monkeypatch):
     """调试开关关闭时, 不得把驱动层原始报错(含表名与约束名)返回给客户端"""
     _patch_debug(monkeypatch, enabled=False)
     raw = 'duplicate key value violates unique constraint "users_pkey"'
-    body = json.loads((await integrity_error_handler(_make_request(), _integrity_error(raw))).body)
+    body = _payload(await integrity_error_handler(_make_request(), _integrity_error(raw)))
     assert body["data"] == {"error_code": "duplicate"}
     assert "users_pkey" not in json.dumps(body, ensure_ascii=False)
 
@@ -265,7 +282,7 @@ async def test_sqlalchemy_handler_returns_500_without_debug(monkeypatch):
     """调试关闭时数据库异常统一返回 500, data 为空"""
     _patch_debug(monkeypatch, enabled=False)
     response = await sqlalchemy_error_handler(_make_request(), SQLAlchemyError("connection reset"))
-    body = json.loads(response.body)
+    body = _payload(response)
     assert response.status_code == 500
     assert body == {"code": 500, "message": "数据库操作错误", "data": None}
 
@@ -277,7 +294,7 @@ async def test_sqlalchemy_handler_captures_live_traceback(monkeypatch):
         raise SQLAlchemyError("connection reset by peer")
     except SQLAlchemyError as exc:
         response = await sqlalchemy_error_handler(_make_request(), exc)
-    data = json.loads(response.body)["data"]
+    data = _payload(response)["data"]
     assert data["error_type"] == "SQLAlchemyError"
     assert "connection reset by peer" in data["traceback"]
 
@@ -286,7 +303,7 @@ async def test_general_handler_returns_500_without_debug(monkeypatch):
     """调试关闭时兜底异常返回 500, data 为空"""
     _patch_debug(monkeypatch, enabled=False)
     response = await general_exception_handler(_make_request(), RuntimeError("boom"))
-    body = json.loads(response.body)
+    body = _payload(response)
     assert response.status_code == 500
     assert body == {"code": 500, "message": "服务器内部错误", "data": None}
 
@@ -298,7 +315,7 @@ async def test_general_handler_captures_live_traceback(monkeypatch):
         raise RuntimeError("boom")
     except RuntimeError as exc:
         response = await general_exception_handler(_make_request(), exc)
-    data = json.loads(response.body)["data"]
+    data = _payload(response)["data"]
     assert data["error_type"] == "RuntimeError"
     assert "boom" in data["traceback"]
 
@@ -425,7 +442,7 @@ async def test_validation_handler_envelope_shape(monkeypatch):
     """校验失败应返回三段式信封, data 中携带稳定错误码与字段列表"""
     _patch_debug(monkeypatch, enabled=False)
     response = await request_validation_handler(_make_request("/api/auth/login"), _validation_error([_PASSWORD_ERROR]))
-    body = json.loads(response.body)
+    body = _payload(response)
     assert response.status_code == 422
     assert body["code"] == 422
     assert body["message"] == "请求参数校验失败"
@@ -447,25 +464,25 @@ async def test_validation_handler_never_echoes_raw_input(monkeypatch):
     """调试关闭时, 响应中不得出现用户提交的原始值(此处为明文密码)"""
     _patch_debug(monkeypatch, enabled=False)
     response = await request_validation_handler(_make_request("/api/auth/login"), _validation_error([_PASSWORD_ERROR]))
-    text = response.body.decode()
+    text = bytes(response.body).decode()
     assert "P@ssw0rd-Secret-明文" not in text
-    assert "input" not in json.loads(response.body)["data"]["fields"][0]
+    assert "input" not in _payload(response)["data"]["fields"][0]
 
 
 async def test_validation_handler_never_echoes_ctx_when_debug_off(monkeypatch):
     """调试关闭时, ctx 中的约束参数也不应出现"""
     _patch_debug(monkeypatch, enabled=False)
     response = await request_validation_handler(_make_request(), _validation_error([_PASSWORD_ERROR]))
-    data = json.loads(response.body)["data"]
+    data = _payload(response)["data"]
     assert "ctx" not in data
-    assert "max_length" not in response.body.decode()
+    assert "max_length" not in bytes(response.body).decode()
 
 
 async def test_validation_handler_exposes_raw_errors_when_debug_on(monkeypatch):
     """调试开启时才返回 pydantic 原始错误列表, 且 fields 中始终不含原始值"""
     _patch_debug(monkeypatch, enabled=True)
     response = await request_validation_handler(_make_request(), _validation_error([_PASSWORD_ERROR]))
-    data = json.loads(response.body)["data"]
+    data = _payload(response)["data"]
     assert data["error_code"] == "validation_error"
     assert data["raw_errors"][0]["input"] == "P@ssw0rd-Secret-明文"
     assert data["fields"][0].get("input") is None
@@ -475,7 +492,7 @@ async def test_validation_handler_skips_non_dict_entries(monkeypatch):
     """非字典形态的错误项应被跳过, 而不是让处理器自身抛异常"""
     _patch_debug(monkeypatch, enabled=False)
     exc = RequestValidationError([_PASSWORD_ERROR, "not-a-dict", None])  # type: ignore[list-item]
-    data = json.loads((await request_validation_handler(_make_request(), exc)).body)["data"]
+    data = _payload(await request_validation_handler(_make_request(), exc))["data"]
     assert data["error_count"] == 1
     assert len(data["fields"]) == 1
 
@@ -485,7 +502,7 @@ async def test_validation_handler_truncates_field_list(monkeypatch):
     _patch_debug(monkeypatch, enabled=False)
     total = MAX_FIELD_ERRORS + 70
     many = [{"type": "missing", "loc": ("body", "items", i, "id"), "msg": "Field required"} for i in range(total)]
-    data = json.loads((await request_validation_handler(_make_request(), _validation_error(many))).body)["data"]
+    data = _payload(await request_validation_handler(_make_request(), _validation_error(many)))["data"]
     assert len(data["fields"]) == MAX_FIELD_ERRORS
     assert data["error_count"] == total
     assert data["truncated"] is True
