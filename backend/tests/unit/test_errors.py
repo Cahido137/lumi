@@ -1,14 +1,19 @@
 """业务异常基类、错误码载荷与全局异常处理器的单元测试"""
 
+import ast
 import json
+import re
+from pathlib import Path
 from typing import Any
 
+import app.utils.errors as errors_module
 import app.utils.exception as exception_module
 import httpx
 import pytest
 from app.config import OpsSettings
 from app.schemas.auth import LoginRequest
 from app.schemas.chat import ChatRequest
+from app.schemas.error_code import ErrorCode, SessionErrorCode, WorkspaceErrorCode
 from app.utils.errors import ConflictError, Error, NotFoundError, WorkspaceViolation
 from app.utils.exception import (
     MAX_FIELD_ERRORS,
@@ -81,7 +86,7 @@ def _build_app():
     @app.get("/conflict")
     async def conflict():
         """抛出业务异常, 由 ExceptionMiddleware 命中业务处理器"""
-        raise ConflictError("该会话已有正在进行的运行", code="run_in_progress")
+        raise ConflictError("该会话已有正在进行的运行", code=SessionErrorCode.RUN_IN_PROGRESS)
 
     @app.get("/db-error")
     async def db_error():
@@ -125,7 +130,7 @@ def test_message_argument_overrides_default():
 
 def test_code_argument_overrides_class_default():
     """构造参数 code 应覆盖类级默认错误码, 用于同一异常类下细分场景"""
-    err = ConflictError("已有活动运行", code="run_in_progress")
+    err = ConflictError("已有活动运行", code=SessionErrorCode.RUN_IN_PROGRESS)
     assert err.error_code == "run_in_progress"
     assert ConflictError().error_code == "conflict"  # 类级默认值不被实例修改污染
 
@@ -165,7 +170,7 @@ def test_payload_contains_error_code():
 
 def test_payload_flattens_detail():
     """detail 中的键值对应被平铺进载荷"""
-    err = WorkspaceViolation("路径越界", code="path_outside_workspace", detail={"path": "../x"})
+    err = WorkspaceViolation("路径越界", code=WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE, detail={"path": "../x"})
     assert err.to_payload() == {"error_code": "path_outside_workspace", "path": "../x"}
 
 
@@ -206,7 +211,7 @@ async def test_business_handler_uses_exception_http_status(err, expected_status)
 async def test_business_handler_envelope_shape(monkeypatch):
     """业务异常响应应为三段式信封, data 中携带稳定错误码"""
     _patch_debug(monkeypatch, enabled=False)
-    err = ConflictError("该会话存在未完成的审批", code="pending_approval_exists")
+    err = ConflictError("该会话存在未完成的审批", code=SessionErrorCode.PENDING_APPROVAL_EXISTS)
     response = await business_error_handler(_make_request("/api/sessions/x/chat"), err)
     assert _payload(response) == {
         "code": 409,
@@ -570,3 +575,66 @@ async def test_query_param_violation_uses_query_loc_prefix(monkeypatch):
     data = response.json()["data"]
     assert data["error_code"] == "validation_error"
     assert data["fields"][0]["loc"] == "query.pageSize"
+
+
+# ── 错误码注册表 ────────────────────────────────────────────────────────────
+
+
+def _all_error_codes() -> list[ErrorCode]:
+    """收集全部已登记的错误码成员。
+
+    Returns:
+        list[ErrorCode]: 所有 ErrorCode 子类中的成员。
+
+    Note:
+        ErrorCode 是不含成员的基类, 无法直接迭代, 只能逐个遍历子类收集。
+    """
+    return [member for group in ErrorCode.__subclasses__() for member in group]
+
+
+def test_error_code_registry_is_not_empty():
+    """注册表收集逻辑本身要有效, 否则后续几条断言会退化为恒真"""
+    assert len(_all_error_codes()) >= 30
+
+
+def test_error_code_values_are_unique():
+    """错误码取值全局唯一: 两个概念不得共用同一个码"""
+    values = [member.value for member in _all_error_codes()]
+    duplicated = sorted({value for value in values if values.count(value) > 1})
+    assert duplicated == []
+
+
+def test_error_code_values_are_snake_case():
+    """错误码取值统一为小写下划线形式, 这是对客户端公布的契约"""
+    for member in _all_error_codes():
+        assert re.fullmatch(r"[a-z][a-z0-9_]*", member.value), member.value
+
+
+def test_error_code_serializes_as_plain_string():
+    """错误码经 JSON 序列化后必须是裸值, 不能变成 ErrorCode.XXX 形式"""
+    member = _all_error_codes()[0]
+    assert json.dumps({"error_code": member}) == f'{{"error_code": "{member.value}"}}'
+
+
+def test_exception_default_codes_are_registered():
+    """每个业务异常类的类级默认码都必须是已登记的错误码成员"""
+    registered = set(_all_error_codes())
+    classes = [obj for obj in vars(errors_module).values() if isinstance(obj, type) and issubclass(obj, Error)]
+    assert len(classes) >= 10
+    for cls in classes:
+        assert cls.code in registered, f"{cls.__name__}.code={cls.code!r} 未登记"
+
+
+def test_no_bare_error_code_strings_in_app():
+    """app/ 内不允许出现与错误码取值相同的裸字符串, 定义文件本身除外"""
+    values = {member.value for member in _all_error_codes()}
+    app_root = Path(__file__).resolve().parents[2] / "app"
+    registry = app_root / "schemas" / "error_code.py"
+    offenders = [
+        f"{path.relative_to(app_root.parent)}:{node.lineno}: {node.value!r}"
+        for path in sorted(app_root.rglob("*.py"))
+        if path != registry
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in values
+    ]
+    assert offenders == []
