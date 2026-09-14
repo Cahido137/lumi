@@ -14,6 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from app.config import get_workspacesettings
+from app.schemas.error_code import CommonErrorCode, WorkspaceErrorCode
 from app.utils.errors import WorkspaceViolation
 
 _READ_CHUNK_BYTES = 64 * 1024
@@ -116,7 +117,7 @@ def resolve_within_workspace(policy: WorkspacePolicy, raw_path: str, *, must_exi
     """
     # 路径空值判定
     if not raw_path or not raw_path.strip():
-        raise WorkspaceViolation("路径不能为空", code="empty_path")
+        raise WorkspaceViolation("路径不能为空", code=WorkspaceErrorCode.EMPTY_PATH)
 
     candidate = Path(raw_path).expanduser()  # 展开路径中的～
     if not candidate.is_absolute():
@@ -127,14 +128,16 @@ def resolve_within_workspace(policy: WorkspacePolicy, raw_path: str, *, must_exi
     if not resolved.is_relative_to(policy.root):
         raise WorkspaceViolation(
             message=f"路径越出工作区, 已拒绝: {raw_path}",
-            code="path_outside_workspace",
+            code=WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE,
             detail={"path": raw_path, "workspace_root": str(policy.root)},
         )
 
     # 拒绝模式
     if policy.is_denied(resolved):
         raise WorkspaceViolation(
-            message=f"路径命中拒绝规则, 已拒绝: {raw_path}", code="path_denied", detail={"path": raw_path}
+            message=f"路径命中拒绝规则, 已拒绝: {raw_path}",
+            code=WorkspaceErrorCode.PATH_DENIED,
+            detail={"path": raw_path},
         )
 
     # 类型与存在性判定
@@ -142,12 +145,14 @@ def resolve_within_workspace(policy: WorkspacePolicy, raw_path: str, *, must_exi
         # 文件存在性判断
         if not resolved.exists():
             raise WorkspaceViolation(
-                message=f"指定文件不存在: {raw_path}", code="not_found", detail={"path": str(resolved)}
+                message=f"指定文件不存在: {raw_path}", code=CommonErrorCode.NOT_FOUND, detail={"path": str(resolved)}
             )
         # 文件类型判断
         if not resolved.is_file():
             raise WorkspaceViolation(
-                message=f"目标文件不是普通文件: {raw_path}", code="not_a_file", detail={"path": str(resolved)}
+                message=f"目标文件不是普通文件: {raw_path}",
+                code=WorkspaceErrorCode.NOT_A_FILE,
+                detail={"path": str(resolved)},
             )
     return resolved
 
@@ -188,12 +193,14 @@ def read_text_bounded(
                     truncated_bytes = fh.read(1) != b""
                     break
     except OSError as e:
-        raise WorkspaceViolation(f"文件读取失败: {e}", code="read_failed", detail={"path": str(path)}) from e
+        raise WorkspaceViolation(
+            f"文件读取失败: {e}", code=WorkspaceErrorCode.READ_FAILED, detail={"path": str(path)}
+        ) from e
 
     try:
         text = bytes(buffer).decode(encoding, errors="replace")  # 替换二进制文件乱码字符, 让模型能读取到而不是抛出异常
     except LookupError as e:
-        raise WorkspaceViolation(f"不支持的编码: {encoding}", code="bad_encoding") from e
+        raise WorkspaceViolation(f"不支持的编码: {encoding}", code=WorkspaceErrorCode.BAD_ENCODING) from e
 
     truncated_chars = False
     # 分开返回字节上限与字符上限
@@ -224,21 +231,21 @@ def write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8", max_
         # 进行编码
         data = content.encode(encoding)
     except LookupError as e:
-        raise WorkspaceViolation(f"不支持的编码: {encoding}", code="bad_encoding") from e
+        raise WorkspaceViolation(f"不支持的编码: {encoding}", code=WorkspaceErrorCode.BAD_ENCODING) from e
     except UnicodeEncodeError as e:
-        raise WorkspaceViolation(f"内容无法以 {encoding} 编码", code="bad_content") from e
+        raise WorkspaceViolation(f"内容无法以 {encoding} 编码", code=WorkspaceErrorCode.BAD_CONTENT) from e
 
     target = Path(path)
     # 判断目标路径是否是一个目录
     if target.is_dir():
         raise WorkspaceViolation(
-            f"目标路径为目录, 不可写入: {target}", code="is_directory", detail={"path": str(target)}
+            f"目标路径为目录, 不可写入: {target}", code=WorkspaceErrorCode.IS_DIRECTORY, detail={"path": str(target)}
         )
     # 写入上限判断
     if len(data) > max_bytes:
         raise WorkspaceViolation(
             message="写入内容超出字节上限",
-            code="payload_too_large",
+            code=CommonErrorCode.PAYLOAD_TOO_LARGE,
             detail={"byte_size": len(data), "max_bytes": max_bytes},
         )
 
@@ -246,7 +253,9 @@ def write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8", max_
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        raise WorkspaceViolation(f"无法创建目录: {e}", code="mkdir_failed", detail={"path": str(target)}) from e
+        raise WorkspaceViolation(
+            f"无法创建目录: {e}", code=WorkspaceErrorCode.MKDIR_FAILED, detail={"path": str(target)}
+        ) from e
 
     # dir 必须是目标所在目录: os.replace 的原子性只在同一文件系统内成立。
     # 若改用 mkstemp() 默认的 /tmp, 跨挂载点时 replace 退化为"复制加删除",
@@ -265,7 +274,9 @@ def write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8", max_
     except OSError as e:
         with suppress(OSError):
             os.unlink(tmp_name)
-        raise WorkspaceViolation(f"文件写入失败: {e}", code="write_failed", detail={"path": str(target)}) from e
+        raise WorkspaceViolation(
+            f"文件写入失败: {e}", code=WorkspaceErrorCode.WRITE_FAILED, detail={"path": str(target)}
+        ) from e
     return WriteResult(path=target, byte_size=len(data), created=created)
 
 
@@ -326,7 +337,7 @@ def default_workspace() -> WorkspacePolicy:
     if not settings.workspace_root:
         raise WorkspaceViolation(
             message="未配置 WORKSPACE_ROOT",
-            code="workspace_not_configured",
+            code=WorkspaceErrorCode.WORKSPACE_NOT_CONFIGURED,
             detail=None,
         )
     root = Path(settings.workspace_root)
@@ -334,7 +345,7 @@ def default_workspace() -> WorkspacePolicy:
     if not root.is_dir():
         raise WorkspaceViolation(
             message=f"工作区根目录不是有效目录: {settings.workspace_root}",
-            code="workspace_root_invalid",
+            code=WorkspaceErrorCode.WORKSPACE_ROOT_INVALID,
             detail={"workspace_root": str(root)},
         )
     return WorkspacePolicy(

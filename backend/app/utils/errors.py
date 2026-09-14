@@ -5,11 +5,13 @@
 
 from typing import Any, ClassVar
 
+from app.schemas.error_code import CommonErrorCode, ErrorCode, NetworkErrorCode, WorkspaceErrorCode
+
 
 class Error(Exception):
     """全部业务异常类的基类。"""
 
-    code: ClassVar[str] = "internal_error"
+    code: ClassVar[ErrorCode] = CommonErrorCode.INTERNAL_ERROR
     """类级默认错误码。"""
 
     http_status: ClassVar[int] = 500
@@ -19,7 +21,7 @@ class Error(Exception):
     """类级默认错误消息文案。"""
 
     def __init__(
-        self, message: str | None = None, *, code: str | None = None, detail: dict[str, Any] | None = None
+        self, message: str | None = None, *, code: ErrorCode | None = None, detail: dict[str, Any] | None = None
     ) -> None:
         """初始化业务异常。
 
@@ -29,7 +31,7 @@ class Error(Exception):
             detail: 附加的结构化上下文。
         """
         self.message: str = message or self.default_message
-        self.error_code: str = code or self.code
+        self.error_code: ErrorCode = code or self.code
         self.detail: dict[str, Any] = dict(detail or {})
         super().__init__(self.message)
 
@@ -54,7 +56,7 @@ class Error(Exception):
 class InvalidRequestError(Error):
     """请求参数非法, 或请求体不满足业务前置条件。"""
 
-    code = "invalid_request"
+    code = CommonErrorCode.INVALID_REQUEST
     http_status = 400
     default_message = "请求参数非法"
 
@@ -62,7 +64,7 @@ class InvalidRequestError(Error):
 class UnauthorizedError(Error):
     """未登录或登录信息失效。"""
 
-    code = "unauthorized"
+    code = CommonErrorCode.UNAUTHORIZED
     http_status = 401
     default_message = "未登录或登录信息失效"
 
@@ -70,7 +72,7 @@ class UnauthorizedError(Error):
 class ForbiddenError(Error):
     """无权访问该资源或执行该操作。"""
 
-    code = "forbidden"
+    code = CommonErrorCode.FORBIDDEN
     http_status = 403
     default_message = "无权执行该操作"
 
@@ -82,7 +84,7 @@ class NotFoundError(Error):
         归属校验失败应该抛出本异常。
     """
 
-    code = "not_found"
+    code = CommonErrorCode.NOT_FOUND
     http_status = 404
     default_message = "资源不存在"
 
@@ -94,7 +96,7 @@ class ConflictError(Error):
         存在未完成的审批、审批单已被处理等应该抛出本异常。
     """
 
-    code = "conflict"
+    code = CommonErrorCode.CONFLICT
     http_status = 409
     default_message = "资源状态冲突"
 
@@ -102,7 +104,7 @@ class ConflictError(Error):
 class RateLimitedError(Error):
     """触发频率限制或并发限制。"""
 
-    code = "rate_limited"
+    code = CommonErrorCode.RATE_LIMITED
     http_status = 429
     default_message = "请求过于频繁, 请稍后重试"
 
@@ -110,7 +112,7 @@ class RateLimitedError(Error):
 class PayloadTooLargeError(Error):
     """请求内容或工具产物超出允许的体积上限。"""
 
-    code = "payload_too_large"
+    code = CommonErrorCode.PAYLOAD_TOO_LARGE
     http_status = 413
     default_message = "内容超出允许的大小上限"
 
@@ -118,7 +120,7 @@ class PayloadTooLargeError(Error):
 class UpstreamError(Error):
     """模型供应商、搜索服务商等外部依赖不可用。"""
 
-    code = "upstream_error"
+    code = CommonErrorCode.UPSTREAM_ERROR
     http_status = 502
     default_message = "外部服务不可用"
 
@@ -130,7 +132,7 @@ class WorkspaceViolation(Error):
         路径越界、命中拒绝规则、超出字节上限等应抛出本异常。
     """
 
-    code = "workspace_violation"
+    code = WorkspaceErrorCode.WORKSPACE_VIOLATION
     http_status = 400
     default_message = "该操作超出受限工作区允许的范围或规则策略"
 
@@ -142,6 +144,6 @@ class NetworkPolicyViolation(Error):
         目标解析到内网地址、端口不在白名单、重定向到内网等应抛出本异常。
     """
 
-    code = "network_policy_violation"
+    code = NetworkErrorCode.NETWORK_POLICY_VIOLATION
     http_status = 400
     default_message = "目标地址不在允许的网络访问范围内"

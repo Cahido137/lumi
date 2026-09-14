@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette import status
 
 from app.config import get_opssettings
+from app.schemas.error_code import CommonErrorCode, IntegrityErrorCode
 from app.utils.errors import Error
 
 logger = logging.getLogger(__name__)
@@ -154,14 +155,14 @@ async def request_validation_handler(request: Request, exc: RequestValidationErr
     Returns:
         JSONResponse: 三段式响应信封 {"code", "message", "data"}, HTTP 状态码 422。
         data 中固定携带:
-            error_code: "validation_error"。
+            error_code: validation_error。
             fields: 字段级错误列表, 含 loc / type / msg。
             error_count: 真实的错误数。
             truncated: fields 是否被截断。
     """
     fields, error_count, truncated = _field_errors(exc)
     data: dict = {
-        "error_code": "validation_error",
+        "error_code": CommonErrorCode.VALIDATION_ERROR,
         "fields": fields,
         "error_count": error_count,
         "truncated": truncated,
@@ -188,11 +189,11 @@ async def integrity_error_handler(request: Request, exc: IntegrityError) -> JSON
     """
     error_msg = str(exc.orig)  # 获取错误信息
     if "unique constraint" in error_msg.lower() or "duplicate key" in error_msg.lower():
-        detail, error_code = "数据已存在", "duplicate"
+        detail, error_code = "数据已存在", IntegrityErrorCode.DUPLICATE
     elif "foreign key" in error_msg.lower():
-        detail, error_code = "关联数据不存在", "foreign_key_violation"
+        detail, error_code = "关联数据不存在", IntegrityErrorCode.FOREIGN_KEY_VIOLATION
     else:
-        detail, error_code = "数据约束冲突", "integrity_error"
+        detail, error_code = "数据约束冲突", IntegrityErrorCode.INTEGRITY_ERROR
     data: dict = {"error_code": error_code}
     debug = _debug_payload("IntegrityError", error_msg)
     if debug is not None:
