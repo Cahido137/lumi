@@ -204,6 +204,12 @@ def test_host_matches_ip_literal_and_empty_list() -> None:
     assert host_matches("127.0.0.1", ()) is False
 
 
+def test_host_matches_requires_lowercase_host() -> None:
+    """名单项大小写无关, 主机名由调用方归一(validate_target 传的是 parsed.host)。"""
+    assert host_matches("Example.com", ("example.com",)) is False
+    assert host_matches("example.com", ("Example.COM",)) is True
+
+
 # --------------------------------------------------------------------------- #
 # 系统解析器
 # --------------------------------------------------------------------------- #
@@ -513,6 +519,8 @@ async def test_fetch_propagates_timeouts_from_policy() -> None:
     await fetch_text("http://example.com/", max_chars=10, policy=policy, resolver=RESOLVER, transport=transport)
     timeout = seen[0].extensions["timeout"]
     assert (timeout["connect"], timeout["read"]) == (1.5, 7.0)
+    # write 与 pool 复用 connect 值是刻意的: 不为它们再开两个配置项
+    assert (timeout["write"], timeout["pool"]) == (1.5, 1.5)
 
 
 @pytest.mark.parametrize("status", [404, 429, 500, 503])
@@ -551,6 +559,34 @@ async def test_fetch_follows_redirect_to_public_host() -> None:
     assert [request.headers["host"] for request in seen] == ["example.com", "other.com"]
 
 
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+async def test_fetch_follows_every_redirect_status(status: int) -> None:
+    """集合内的每个重定向状态码都会被跟随。"""
+    seen: list[httpx.Request] = []
+    routes = {
+        f"http://{PUBLIC_IP}/": httpx.Response(status, headers={"location": "http://other.com/next"}),
+        f"http://{PUBLIC_IP2}/next": httpx.Response(200, text="final"),
+    }
+    transport = recording_transport(routes, seen)
+    result = await fetch_text("http://example.com/", max_chars=100, resolver=RESOLVER, transport=transport)
+    assert result.status_code == 200
+    assert result.text == "final"
+    assert result.redirect_count == 1
+
+
+@pytest.mark.parametrize("status", [300, 304, 305])
+async def test_fetch_does_not_follow_statuses_outside_redirect_set(status: int) -> None:
+    """带 Location 但不在集合内的 3xx 按最终响应处理。"""
+    seen: list[httpx.Request] = []
+    routes = {f"http://{PUBLIC_IP}/": httpx.Response(status, headers={"location": "http://other.com/"}, text="stop")}
+    transport = recording_transport(routes, seen)
+    result = await fetch_text("http://example.com/", max_chars=100, resolver=RESOLVER, transport=transport)
+    assert result.status_code == status
+    assert result.text == "stop"
+    assert result.redirect_count == 0
+    assert len(seen) == 1
+
+
 async def test_fetch_blocks_redirect_to_internal_address() -> None:
     """重定向到内网地址被拦下。"""
     seen: list[httpx.Request] = []
@@ -572,6 +608,22 @@ async def test_fetch_blocks_redirect_to_metadata_endpoint() -> None:
     with pytest.raises(NetworkPolicyViolation) as exc:
         await fetch_text("http://example.com/", max_chars=100, resolver=RESOLVER, transport=transport)
     assert violation_code(exc.value) == "address_denied"
+
+
+async def test_fetch_blocks_redirect_with_userinfo_and_hides_credentials() -> None:
+    """重定向到带凭据的内网地址被拦下, 且凭据不进错误信封。"""
+    seen: list[httpx.Request] = []
+    routes = {
+        f"http://{PUBLIC_IP}/": httpx.Response(
+            302, headers={"location": "http://user:hunter2@internal.example/secret"}
+        ),
+    }
+    transport = recording_transport(routes, seen)
+    with pytest.raises(NetworkPolicyViolation) as exc:
+        await fetch_text("http://example.com/", max_chars=100, resolver=RESOLVER, transport=transport)
+    assert violation_code(exc.value) == "address_denied"
+    assert exc.value.detail["host"] == "internal.example"
+    assert "hunter2" not in repr(exc.value.to_payload())
 
 
 async def test_fetch_blocks_redirect_to_other_scheme() -> None:
@@ -653,6 +705,41 @@ async def test_fetch_enforces_max_redirects() -> None:
     assert len(seen) == 3
 
 
+async def test_fetch_too_many_redirects_reports_only_location_host() -> None:
+    """跳数超限的详情只回报主机名, 不回显服务器给的 Location 原文。"""
+    seen: list[httpx.Request] = []
+    routes = {
+        f"http://{PUBLIC_IP}/": httpx.Response(302, headers={"location": "http://other.com/next"}),
+        f"http://{PUBLIC_IP2}/next": httpx.Response(302, headers={"location": "http://user:hunter2@other.com/?t=abc"}),
+    }
+    transport = recording_transport(routes, seen)
+    with pytest.raises(NetworkPolicyViolation) as exc:
+        await fetch_text(
+            "http://example.com/",
+            max_chars=100,
+            policy=make_policy(max_redirects=1),
+            resolver=RESOLVER,
+            transport=transport,
+        )
+    assert violation_code(exc.value) == "too_many_redirects"
+    assert exc.value.detail["hops"] == 1
+    assert len(seen) == 2
+    assert exc.value.detail["location_host"] == "other.com"
+    assert "location" not in exc.value.detail
+    payload = repr(exc.value.to_payload())
+    assert "hunter2" not in payload
+    assert "t=abc" not in payload
+
+
+async def test_fetch_malformed_location_surfaces_as_transport_error() -> None:
+    """畸形 Location 由 httpx 在收响应头时抛传输错误, 不会进到策略层。"""
+    seen: list[httpx.Request] = []
+    routes = {f"http://{PUBLIC_IP}/": httpx.Response(302, headers={"location": "http://[::1"})}
+    transport = recording_transport(routes, seen)
+    with pytest.raises(httpx.HTTPError):
+        await fetch_text("http://example.com/", max_chars=100, resolver=RESOLVER, transport=transport)
+
+
 async def test_fetch_zero_redirects_returns_3xx_as_final() -> None:
     """上限为 0 时不跟随, 3xx 原样返回。"""
     seen: list[httpx.Request] = []
@@ -712,6 +799,23 @@ async def test_fetch_exact_byte_limit_is_not_truncated() -> None:
     )
     assert result.byte_size == 5000
     assert result.truncated_bytes is False
+
+
+async def test_fetch_can_truncate_bytes_and_chars_together() -> None:
+    """两个上限同时触发时两个标志都为真。"""
+    seen: list[httpx.Request] = []
+    routes = {f"http://{PUBLIC_IP}/": httpx.Response(200, content=b"x" * 6000)}
+    transport = recording_transport(routes, seen)
+    result = await fetch_text(
+        "http://example.com/",
+        max_chars=10,
+        policy=make_policy(max_response_bytes=5000),
+        resolver=RESOLVER,
+        transport=transport,
+    )
+    assert result.byte_size == 5000
+    assert result.text == "x" * 10
+    assert (result.truncated_bytes, result.truncated_chars) == (True, True)
 
 
 async def test_fetch_truncates_at_char_limit() -> None:
@@ -868,6 +972,8 @@ def test_default_policy_uses_safe_defaults(monkeypatch: pytest.MonkeyPatch) -> N
         assert policy.allow_private is False
         assert policy.max_redirects == 3
         assert policy.max_response_bytes == 2 * 1024 * 1024
+        # connect 超时会被 httpcore 同时用于 TLS 握手, 默认值不得低于 10s
+        assert (policy.connect_timeout, policy.read_timeout) == (10.0, 15.0)
     finally:
         get_networksettings.cache_clear()
         default_network_policy.cache_clear()

@@ -87,6 +87,18 @@ async def test_tool_reports_char_truncation(calls: list[dict], monkeypatch: pyte
     assert f"[内容已截断, 上限{http_tool.BODY_MAX_LEN}字符, 实际读入9000字节]" in text
 
 
+async def test_tool_byte_note_wins_when_both_truncated(calls: list[dict], monkeypatch: pytest.MonkeyPatch) -> None:
+    """两个上限同时触发时文案报字节上限, 因为网络上还有内容没读。"""
+
+    async def fake_fetch(url, **kwargs):
+        return result(text="z" * 10, byte_size=2048, truncated_bytes=True, truncated_chars=True)
+
+    monkeypatch.setattr(http_tool, "fetch_text", fake_fetch)
+    with use_network_policy(make_policy(max_response_bytes=2048)):
+        text = await http_tool.http_get.ainvoke({"url": "http://example.com/"})
+    assert "[内容已截断, 上限2048字节, 实际读入2048字节]" in text
+
+
 async def test_tool_does_not_wrap_policy_violation(monkeypatch: pytest.MonkeyPatch) -> None:
     """策略违规必须原样传播, 否则稳定错误码会丢失。"""
 
