@@ -9,13 +9,32 @@ Note:
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # 根据当前文件位置找到根目录绝对位置
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _split_csv_list(value: Any) -> Any:
+    """把逗号分隔字符串形式的列表配置解析为列表。
+
+    Args:
+        value: 环境变量或显式传入的原始值, 可以是列表、逗号分隔字符串或 JSON 数组字符串。
+
+    Returns:
+        Any: 解析后的列表; value 本身不是字符串时原样返回, 交给 pydantic 校验。
+    """
+    if not isinstance(value, str):
+        return value  # 显式传入列表时直接交给 pydantic 校验
+    text = value.strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        return json.loads(text)  # JSON 数组字符串
+    return [item.strip() for item in text.split(",") if item.strip()]
 
 
 class LLMSettings(BaseSettings):
@@ -152,14 +171,68 @@ class WorkspaceSettings(BaseSettings):
         Returns:
             list[str]: 解析后的列表。
         """
-        if not isinstance(value, str):
-            return value  # 显式传入列表时直接交给 pydantic 校验
-        text = value.strip()
-        if not text:
-            return []
-        if text.startswith("["):
-            return json.loads(text)  # JSON 解析
-        return [item.strip() for item in text.split(",") if item.strip()]  # 逗号分隔字符串
+        return _split_csv_list(value)
+
+
+NETWORK_DEFAULT_ALLOWED_PORTS: str = "80,443"
+"""默认允许的出站 TCP 端口, 逗号分隔。"""
+
+
+class NetworkSettings(BaseSettings):
+    """出站网络访问策略配置信息。
+
+    Note:
+        默认拒绝回环、私网、链路本地等不可路由地址; 需要访问内部服务时按主机名显式放行。
+    """
+
+    model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", env_file_encoding="utf-8", extra="ignore")
+
+    network_enabled: bool = Field(True, description="是否允许工具发起出站 HTTP 请求")
+    """出站请求总开关。默认为 True; 置 False 时 HTTP 工具失败关闭。"""
+
+    network_allowed_ports: Annotated[list[int], NoDecode] = Field(
+        default_factory=lambda: [int(p) for p in NETWORK_DEFAULT_ALLOWED_PORTS.split(",") if p],
+        description="允许连接的出站 TCP 端口",
+    )
+    """允许连接的出站 TCP 端口, 默认为 80 与 443。"""
+
+    network_host_allow: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, description="额外放行的主机名或 IP 字面量"
+    )
+    """额外放行的主机名或 IP 字面量, 默认为空。命中即豁免地址类别检查, 但仍受协议与端口约束。"""
+
+    network_host_deny: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, description="无条件拒绝的主机名或 IP 字面量"
+    )
+    """无条件拒绝的主机名或 IP 字面量, 默认为空。优先级高于放行名单。"""
+
+    network_allow_private: bool = Field(False, description="是否允许访问回环与私网地址")
+    """是否放行不可路由地址。默认为 False, 仅本地开发时开启。"""
+
+    network_max_redirects: int = Field(3, ge=0, description="单次请求允许的最大重定向跳数")
+    """单次请求允许的最大重定向跳数。默认为 3, 置 0 表示不跟随重定向。"""
+
+    network_max_response_bytes: int = Field(2 * 1024 * 1024, gt=0, description="单次响应体读入的字节数上限")
+    """单次响应体读入的字节上限, 超出即停止读取并标记截断。"""
+
+    network_connect_timeout: float = Field(10.0, gt=0, description="建立连接的超时秒数")
+    """建立连接的超时秒数, 同时约束 TLS 握手。默认为 10.0s。"""
+
+    network_read_timeout: float = Field(15.0, gt=0, description="读取响应的超时秒数")
+    """读取响应的超时秒数。默认为 15.0s。"""
+
+    @field_validator("network_allowed_ports", "network_host_allow", "network_host_deny", mode="before")
+    @classmethod
+    def _split_csv(cls, value):
+        """把逗号分隔字符串形式的列表配置解析为列表。
+
+        Args:
+            value: 环境变量或显式传入的原始值, 可以是列表、逗号分隔字符串或 JSON 数组字符串。
+
+        Returns:
+            list[Any]: 解析后的列表, 端口项随后由 pydantic 收敛为 int。
+        """
+        return _split_csv_list(value)
 
 
 class CompactSettings(BaseSettings):
@@ -274,6 +347,16 @@ def get_workspacesettings() -> WorkspaceSettings:
         WorkspaceSettings: 进程内唯一配置单例。
     """
     return WorkspaceSettings()
+
+
+@lru_cache
+def get_networksettings() -> NetworkSettings:
+    """获得出站网络策略配置单例。
+
+    Returns:
+        NetworkSettings: 进程内唯一配置单例。
+    """
+    return NetworkSettings()
 
 
 @lru_cache
