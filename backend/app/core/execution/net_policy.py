@@ -339,7 +339,8 @@ async def fetch_text(
                         raise NetworkPolicyViolation(
                             f"重定向跳数超过上限 {active.max_redirects}",
                             code=NetworkErrorCode.TOO_MANY_REDIRECTS,
-                            detail={"hops": hops, "location": location},
+                            # 只回报主机名: Location 由服务器给出, 原文可能带 userinfo 或任意长文本
+                            detail={"hops": hops, "location_host": httpx.URL(location).host},
                         )
                     hops += 1
                     current = str(target.url.join(location))  # 相对地址按本跳的原始 URL 拼接
