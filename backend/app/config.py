@@ -127,6 +127,28 @@ class OpsSettings(BaseSettings):
     """错误响应是否要附带调试信息。"""
 
 
+class HealthSettings(BaseSettings):
+    """健康检查与深度体检配置信息。
+
+    Note:
+        由于深度体检会进行一次真实的模型调用, 因此在配置的 TTL 时间内会复用防止频繁产生模型调用费用。
+    """
+
+    model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", env_file_encoding="utf-8", extra="ignore")
+
+    health_deep_enabled: bool = Field(True, description="是否开放深度体检")
+    """深度体检开关, 默认开启。关闭时对用户返回 403。"""
+
+    health_deep_cache_ttl: float = Field(60.0, gt=0, description="深度体检通过状态复用时间")
+    """深度体检通过复用时间, 默认 60s。在此时间内最多产生一次模型调用。"""
+
+    health_deep_failure_ttl: float = Field(5.0, gt=0, description="深度体检降级结果的复用时间")
+    """深度体检降级结果复用时间, 默认 5s, 应远小于通过复用时间。"""
+
+    health_deep_model_timeout: float = Field(5.0, gt=0, description="模型生成探针超时时间")
+    """模型生成探针超时秒数, 默认 5s。"""
+
+
 WORKSPACE_DEFAULT_DENY_PATTERNS: str = ".env,.env.*,.git,.git/*,*.pem,*.key,id_rsa,id_ed25519"
 """工作区默认拒绝访问的通配模式, 逗号分隔。"""
 
@@ -337,6 +359,16 @@ def get_opssettings() -> OpsSettings:
         OpsSettings: 进程内唯一配置实例。
     """
     return OpsSettings()
+
+
+@lru_cache
+def get_healthsettings() -> HealthSettings:
+    """获得健康检查配置单例。
+
+    Returns:
+        HealthSettings: 进程内唯一配置单例。
+    """
+    return HealthSettings()
 
 
 @lru_cache

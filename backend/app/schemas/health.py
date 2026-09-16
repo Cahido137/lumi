@@ -66,3 +66,5 @@ class DeepCheckResponse(BaseModel):
 
     status: Literal["healthy", "degraded"] = Field(..., description="检查结果")
     checks: DeepChecks = Field(..., description="逐项检查结果详情")
+    cached: bool = Field(False, description="本结果是否来自短期缓存复用")
+    age_ms: float = Field(0.0, description="结果产生至今的时间, 单位毫秒")
