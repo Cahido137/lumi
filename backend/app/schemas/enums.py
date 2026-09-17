@@ -1,4 +1,4 @@
-"""全局枚举定义: 包括事件类型、计划状态、审批状态、授权范围、执行状态、消息角色。
+"""全局枚举定义: 包括事件类型、计划状态、审批状态、授权范围、执行状态、运行状态、消息角色。
 
 所有枚举类型均继承自StrEnum, 可直接作为字符串进行比较。数据库以字符串形式存储枚举值, 业务逻辑中以枚举常量进行判定。
 """
@@ -190,6 +190,32 @@ class ExecutionStatus(StrEnum):
 
     ERROR = "error"
     """执行出错状态。"""
+
+
+class RunStatus(StrEnum):
+    """一次 Agent 运行的生命周期状态。
+
+    Note:
+        本枚举用于描述 Agent 自身运行状态, 与审批单的 ApprovalStatus 分开。
+    """
+
+    PENDING = "pending"
+    """运行已登记, 正在等待执行。"""
+
+    RUNNING = "running"
+    """正在执行图流, 运行中。"""
+
+    WAITING_APPROVAL = "waiting_approval"
+    """图中断, 正在等待人工审批。"""
+
+    SUCCEEDED = "succeeded"
+    """运行正常结束并产出了回复。"""
+
+    FAILED = "failed"
+    """运行因异常终止。"""
+
+    CANCELLED = "cancelled"
+    """运行被用户手动打断。"""
 
 
 class MessageRole(StrEnum):

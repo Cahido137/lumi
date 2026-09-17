@@ -212,3 +212,44 @@ class Approval(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), comment="审批创建时间"
     )
+
+
+class Run(Base):
+    """运行表, 记录一次 Agent 运行。"""
+
+    __tablename__ = "runs"
+
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="运行唯一标识ID")
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID"
+    )
+    thread_id: Mapped[str] = mapped_column(String(200), index=True, comment="LangGraph线程ID, 每轮运行一个")
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="pending",
+        comment="pending=排队, running=运行, waiting_approval=待审批, succeeded=成功, failed=失败, cancelled=打断",
+    )
+    input_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey(Message.id, ondelete="SET NULL"), nullable=True, index=True, comment="触发本轮运行的用户消息ID"
+    )
+    attempt: Mapped[int] = mapped_column(Integer, default=1, comment="同一条输入消息的第几次尝试, 从1开始")
+    error_code: Mapped[str | None] = mapped_column(String(50), nullable=True, comment="失败时的稳定错误码")
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="收到打断请求的时间"
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="领取本运行的worker标识")
+    lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="领取租约的到期时间"
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="进入running状态的时间"
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="进入终态的时间"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="运行登记时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="状态变更时间"
+    )
