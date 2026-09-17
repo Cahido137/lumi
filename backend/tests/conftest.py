@@ -60,7 +60,7 @@ async def clean_db(test_db, checkpoint):
     # RESTART IDENTITY 重置自增列, 每个测试的 uid 都从10000开始
     async with async_engine.begin() as conn:
         await conn.execute(
-            text("TRUNCATE approvals, tool_executions, todos, messages, sessions, users RESTART IDENTITY CASCADE")
+            text("TRUNCATE runs, approvals, tool_executions, todos, messages, sessions, users RESTART IDENTITY CASCADE")
         )
     # langgraph 的 checkpoint 表不清理, 由 langgraph 自行管理
     state._session_lock.clear()
