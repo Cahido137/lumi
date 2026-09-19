@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_current_user, get_owned_session_or_404
 from app.core.session_runner import RunCancelledError, request_cancel_session, retry_agent_session, run_agent_session
 from app.crud import messages as messages_crud
+from app.crud import runs as runs_crud
 from app.db.models import User
 from app.db.session import get_db
 from app.schemas.chat import (
@@ -120,6 +121,11 @@ async def cancel_run(
         HTTPException 404: 会话不存在或指定会话不属于当前用户。
     """
     await get_owned_session_or_404(db, str(session_id), current_user)
+    active_run = await runs_crud.get_active_run(db, str(session_id))  # 获取当前尚未结束的运行
+    # 如果确实存在尚未结束的运行
+    if active_run is not None:
+        await runs_crud.request_run_cancel(db, active_run.id)  # 登记打断请求
+        await db.commit()
     cancelled = request_cancel_session(str(session_id))  # 发送打断请求
     return success_response(
         message="已发送打断请求" if cancelled else "当前没有正在运行的对话",

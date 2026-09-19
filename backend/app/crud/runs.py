@@ -69,6 +69,20 @@ async def get_run_by_id(db: AsyncSession, run_id: str) -> Run | None:
     return await db.get(Run, run_id)
 
 
+async def get_run_by_thread_id(db: AsyncSession, thread_id: str) -> Run | None:
+    """按 LangGraph 的线程ID查询运行记录。
+
+    Args:
+        thread_id: LangGraph 的线程ID。
+
+    Returns:
+        返回指定的 Run 对象, 不存在返回 None。
+    """
+    stmt = select(Run).where(Run.thread_id == thread_id).order_by(Run.created_at.desc()).limit(1)
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+
 async def get_active_run(db: AsyncSession, session_id: str) -> Run | None:
     """查询指定会话当前尚未结束的运行。
 
@@ -148,11 +162,12 @@ async def mark_run_started(db: AsyncSession, run_id: str) -> bool:
     return await _advance(db, run_id, RunStatus.RUNNING, started_at=text("clock_timestamp()"))
 
 
-async def mark_run_waiting_approval(db: AsyncSession, run_id: str) -> bool:
+async def mark_run_waiting_approval(db: AsyncSession, run_id: str, *, error_code: str | None = None) -> bool:
     """把运行推进到 waiting_approval。
 
     Args:
         run_id: 运行记录ID。
+        error_code: 上一次尝试的失败稳定错误码, 恢复失败后退回等待审批时填写。
 
     Returns:
         bool: 是否成功流转。
@@ -160,7 +175,10 @@ async def mark_run_waiting_approval(db: AsyncSession, run_id: str) -> bool:
     Note:
         等待审批不是结束, 因此本函数是五个 mark_ 里唯一不写 finished_at 的。
     """
-    return await _advance(db, run_id, RunStatus.WAITING_APPROVAL)
+    values: dict[str, str] = {}
+    if error_code is not None:
+        values["error_code"] = error_code
+    return await _advance(db, run_id, RunStatus.WAITING_APPROVAL, **values)
 
 
 async def mark_run_succeeded(db: AsyncSession, run_id: str) -> bool:

@@ -33,6 +33,7 @@ from app.core.session_runner.state import (
 from app.core.session_runner.stream import process_stream
 from app.crud import approvals as approvals_crud
 from app.crud import messages as messages_crud
+from app.crud import runs as runs_crud
 from app.crud import sessions as sessions_crud
 from app.crud import todos as todos_crud
 from app.crud import tool_executions as tool_executions_crud
@@ -43,21 +44,77 @@ from app.schemas.enums import (
     ApprovalStatus,
     EventType,
     MessageRole,
+    RunStatus,
 )
+from app.schemas.error_code import CommonErrorCode
 from app.schemas.todos import TodoItem, TodoStatus
+from app.utils.errors import Error
 
 logger = logging.getLogger(__name__)
 
 
+def _error_code_of(exc: BaseException) -> str:
+    """提取出异常中包含的稳定错误码。
+
+    Args:
+        exc: 捕获的异常。
+
+    Returns:
+        str: 捕获的业务异常中自带的稳定错误码, 如果没有则视为 internal_error。
+    """
+    if isinstance(exc, Error):
+        return str(exc.error_code)  # 提取出业务异常中的稳定错误码
+    return str(CommonErrorCode.INTERNAL_ERROR)
+
+
+async def _finalize_run(run_id: str | None, outcome: RunStatus | None, error_code: str | None = None) -> None:
+    """按运行结果收尾一条运行记录。
+
+    Args:
+        run_id: 运行记录ID, 从未登记为 None。
+        outcome: 运行结果状态, 为 None 时表示无需收尾。
+        error_code: 失败或退回等待审批时的错误码。
+    """
+    # 还没有运行记录或无需收尾
+    if run_id is None or outcome is None:
+        return
+    try:
+        async with SessionLocal() as db:
+            if outcome is RunStatus.SUCCEEDED:
+                await runs_crud.mark_run_succeeded(db, run_id)
+            elif outcome is RunStatus.FAILED:
+                await runs_crud.mark_run_failed(
+                    db, run_id, error_code=error_code or str(CommonErrorCode.INTERNAL_ERROR)
+                )
+            elif outcome is RunStatus.CANCELLED:
+                await runs_crud.mark_run_cancelled(db, run_id)
+            elif outcome is RunStatus.WAITING_APPROVAL:
+                await runs_crud.mark_run_waiting_approval(db, run_id, error_code=error_code)
+            await db.commit()
+    except Exception:
+        logger.exception("运行状态收尾失败: run_id=%s, outcome=%s", run_id, outcome)
+
+
 async def _run_agent_session_locked(
-    session_id: str, content: str, *, user_message_id: str | None = None
+    session_id: str, content: str, *, user_message_id: str | None = None, attempt: int = 1
 ) -> Message | None:
-    """执行一轮 Agent 对话。调用方必须已经持有会话锁并通过取消代际校验。"""
+    """执行一轮 Agent 对话。调用方必须已经持有会话锁并通过取消代际校验。
+
+    Args:
+        session_id: 会话ID。
+        content: 用户输入消息内容。
+        user_message_id: 重试场景下复用已有的用户消息ID。
+        attempt: 同一条输入消息的第几次尝试。
+    """
     # 清除上一次遗留的取消状态
     cancel_event = get_cancel_event(session_id)
     cancel_event.clear()
     _active_runs.add(session_id)  # 将本会话加入运行队列
     logger.info("开始执行会话轮次: user_message_id=%s", user_message_id or " - ")
+
+    run_id: str | None = None
+    outcome: RunStatus | None = None
+    run_error_code: str | None = None
 
     try:
         # 发布开始事件
@@ -75,11 +132,25 @@ async def _run_agent_session_locked(
                 user_row = await messages_crud.add_message(db, session_id, MessageRole.USER, content)
                 await db.commit()
                 user_message_id = user_row.id
+
+            run_context = build_config(session_id)  # 创建配置
+            # 登记本轮运行
+            run = await runs_crud.create_run(
+                db,
+                session_id,
+                run_context.thread_id,
+                input_message_id=user_message_id,
+                attempt=attempt,
+            )
+            run_id = run.id
+            await runs_crud.mark_run_started(db, run_id)
+            await db.commit()
+            logger.info("运行已登记: run_id=%s, attempt=%d", run_id, attempt)
+
             # 重建消息历史
             history = await rebuild_history(db, session_id, exclude_id=user_message_id)
             messages = get_system_messages() + history + [HumanMessage(content=content, id=user_message_id)]
 
-            run_context = build_config(session_id)  # 创建配置
             grants = await approvals_crud.get_session_grants(db, session_id)  # 获取当前会话工具授权
             graph_input = {"messages": messages, "grants": grants.model_dump(), "session_id": session_id}
             # 如果存在因被打断而未完成的任务，则注入先前的完整计划
@@ -121,6 +192,7 @@ async def _run_agent_session_locked(
                         ),
                     )
                 )
+                outcome = RunStatus.WAITING_APPROVAL  # 设定运行状态为等待审批
                 return None
 
             # 最后回答
@@ -137,10 +209,12 @@ async def _run_agent_session_locked(
                 data=AgentFinishedResponse(reply=stream_result.final_reply),
             )
         )
+        outcome = RunStatus.SUCCEEDED  # 设定运行状态为运行成功结束
         return ai_message
 
     # 如果遇到打断
     except RunCancelledError as e:
+        outcome = RunStatus.CANCELLED  # 设定运行状态为被打断
         logger.info("会话运行被打断")
         partial_id = None
         async with SessionLocal() as db:
@@ -164,6 +238,8 @@ async def _run_agent_session_locked(
         raise
 
     except Exception as e:
+        outcome = RunStatus.FAILED  # 设定运行状态为运行异常
+        run_error_code = _error_code_of(e)
         logger.exception("会话运行异常")
         # 发布错误事件
         await event_bus.publish(
@@ -174,6 +250,8 @@ async def _run_agent_session_locked(
     finally:
         # 将当前会话清出运行队列
         _active_runs.discard(session_id)
+        # 收尾运行记录
+        await _finalize_run(run_id, outcome, run_error_code)
 
 
 async def run_agent_session(session_id: str, content: str, *, user_message_id: str | None = None) -> Message | None:
@@ -222,6 +300,11 @@ async def resume_agent_session(
             cancel_event = get_cancel_event(session_id)
             cancel_event.clear()
             _active_runs.add(session_id)
+
+            run_id: str | None = None
+            outcome: RunStatus | None = None
+            run_error_code: str | None = None
+
             try:
                 async with SessionLocal() as db:
                     # 加锁期间二次校验, 防止等待期间审批单已被处理
@@ -248,6 +331,15 @@ async def resume_agent_session(
                         )
                     )
 
+                    # 确认审批恢复的是同一轮运行
+                    existing = await runs_crud.get_run_by_thread_id(db, thread_id)
+                    run_id = existing.id if existing is not None else None
+                    if run_id is None:
+                        logger.warning("审批恢复找不到对应的运行记录: thread_id=%s", thread_id)
+                    elif not await runs_crud.mark_run_started(db, run_id):
+                        logger.warning("运行状态未能推进到 running: run_id=%s", run_id)
+                    await db.commit()
+
                     # 恢复图的执行
                     config = {"configurable": {"thread_id": thread_id}}
                     plan_queue = await load_plan_queue(db, session_id)
@@ -267,6 +359,8 @@ async def resume_agent_session(
                         # 出现异常回滚审批单
                         await approvals_crud.revert_approval(db, approval_id)
                         await db.commit()
+                        outcome = RunStatus.WAITING_APPROVAL  # 设定运行状态为等待审批
+                        run_error_code = _error_code_of(e)  # 记录错误码
                         await event_bus.publish(
                             AgentEvent(
                                 event_type=EventType.ERROR,
@@ -303,6 +397,7 @@ async def resume_agent_session(
                                 ),
                             )
                         )
+                        outcome = RunStatus.WAITING_APPROVAL  # 设定运行状态为等待审批
                         return None
                     await messages_crud.add_message(
                         db,
@@ -320,9 +415,11 @@ async def resume_agent_session(
                         data=AgentFinishedResponse(reply=stream_result.final_reply),
                     )
                 )
+                outcome = RunStatus.SUCCEEDED  # 设定运行状态为运行成功结束
                 return stream_result.final_reply
 
             except RunCancelledError as e:
+                outcome = RunStatus.CANCELLED  # 设定运行状态为被打断
                 logger.info("恢复执行被打断")
                 partial_id = None
                 async with SessionLocal() as db:
@@ -347,9 +444,18 @@ async def resume_agent_session(
                 )
                 raise
 
+            # 兜底
+            except Exception as e:
+                if outcome is None:
+                    outcome = RunStatus.FAILED
+                    run_error_code = _error_code_of(e)
+                raise
+
             finally:
                 # 将当前会话清出运行队列
                 _active_runs.discard(session_id)
+                # 收尾当前运行记录
+                await _finalize_run(run_id, outcome, run_error_code)
     finally:
         unbind_session_id(_log_token)
         unregister_pending_run(session_id)
@@ -386,10 +492,11 @@ async def retry_agent_session(session_id: str, message_id: str, new_content: str
                 await sessions_crud.set_context_summary(db, session_id, None, None)
                 if new_content is not None:
                     await messages_crud.update_message_content(db, message_id, new_content)
+                attempt = await runs_crud.next_attempt(db, session_id, message_id)  # 计算这是同一条消息输入的第几次尝试
                 await db.commit()
 
             # 重跑消息
-            return await _run_agent_session_locked(session_id, content, user_message_id=message_id)
+            return await _run_agent_session_locked(session_id, content, user_message_id=message_id, attempt=attempt)
     finally:
         unbind_session_id(_log_token)
         unregister_pending_run(session_id)
