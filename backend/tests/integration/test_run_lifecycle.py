@@ -1,0 +1,303 @@
+"""集成测试: 运行记录在会话运行器里的生命周期(真库真图, 模型与工具用假的)。"""
+
+import asyncio
+
+import pytest
+from app.core.graph import builder
+from app.core.session_runner import resume_agent_session, retry_agent_session, run_agent_session, runner
+from app.core.session_runner.state import RunCancelledError, request_cancel_session
+from app.crud import runs as runs_crud
+from app.crud import sessions as sessions_crud
+from app.crud import users as users_crud
+from app.db.models import Approval, Message, Run
+from app.db.session import SessionLocal
+from app.schemas.enums import ApprovalStatus, MessageRole, RunStatus
+from app.utils.errors import ConflictError
+from langchain_core.messages import AIMessage
+from sqlalchemy import select
+from tests.fakes import FakePlanner, FakeTool, ScriptedModel, SlowModel
+
+
+class RaisingModel:
+    """每次调用都抛出指定异常的假模型。"""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def ainvoke(self, messages, **kwargs):
+        raise self.error
+
+
+def tool_call(name, args, call_id):
+    """构造模型工具调用"""
+    return {"name": name, "args": args, "id": call_id}
+
+
+def patch_agent_deps(monkeypatch, model, tools=None):
+    """替换全局图单例运行时的模型/计划器/工具"""
+    monkeypatch.setattr(builder, "_model_with_tools", model)
+    monkeypatch.setattr(builder, "create_planner_llm", lambda: FakePlanner([]))
+    monkeypatch.setattr(builder, "get_planner_structured_method", lambda: "function_calling")
+    monkeypatch.setattr(builder, "TOOLS_BY_NAME", tools or {})
+
+
+def patch_history_failure(monkeypatch, error: Exception) -> None:
+    """让运行在登记之后、跑图之前失败, 用于确定性地触发失败出口。"""
+
+    async def boom(db, session_id, exclude_id=None):
+        raise error
+
+    monkeypatch.setattr(runner, "rebuild_history", boom)
+
+
+async def create_user_and_session(username="run_life"):
+    """创建用户与会话, 返回会话ID"""
+    async with SessionLocal() as db:
+        user = await users_crud.create_user(db, username, "x")
+        await db.commit()
+        session = await sessions_crud.create_session(db, "运行会话", user.id)
+        await db.commit()
+        return session.id
+
+
+async def get_runs(session_id) -> list[Run]:
+    """取会话全部运行记录, 按登记时间正序"""
+    async with SessionLocal() as db:
+        result = await db.execute(select(Run).where(Run.session_id == session_id).order_by(Run.created_at, Run.id))
+        return list(result.scalars())
+
+
+async def get_approval(session_id) -> Approval | None:
+    """取会话的审批单"""
+    async with SessionLocal() as db:
+        return await db.scalar(select(Approval).where(Approval.session_id == session_id))
+
+
+async def first_user_message_id(session_id) -> str:
+    """取会话第一条用户消息的ID"""
+    async with SessionLocal() as db:
+        result = await db.execute(
+            select(Message.id)
+            .where(Message.session_id == session_id, Message.role == MessageRole.USER.value)
+            .order_by(Message.created_at, Message.id)
+            .limit(1)
+        )
+        return result.scalar_one()
+
+
+async def start_approval_run(monkeypatch, session_id, final="执行完毕") -> None:
+    """跑一轮会触发审批中断的对话"""
+    tool = FakeTool("run_shell", result="目录列表")
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(content="", tool_calls=[tool_call("run_shell", {"command": "dir"}, "c1")]),
+                AIMessage(content=final),
+            ]
+        ),
+        tools={"run_shell": tool},
+    )
+    assert await run_agent_session(session_id, "列目录") is None
+
+
+# ---------- 正常与审批路径 ----------
+
+
+async def test_successful_run_is_recorded(monkeypatch):
+    """成功轮次留下一条 succeeded 运行, 输入消息与计时列都齐全"""
+    patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="你好, 有什么可以帮你")]))
+    sid = await create_user_and_session("life_ok")
+    reply = await run_agent_session(sid, "你好")
+    assert reply.content == "你好, 有什么可以帮你"
+    runs = await get_runs(sid)
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.status == RunStatus.SUCCEEDED
+    assert run.attempt == 1
+    assert run.input_message_id == await first_user_message_id(sid)
+    assert run.thread_id.startswith(f"{sid}:")
+    assert run.error_code is None
+    assert run.cancel_requested_at is None
+    assert run.started_at is not None
+    assert run.finished_at is not None
+    assert run.finished_at >= run.started_at
+
+
+async def test_approval_interrupt_leaves_run_waiting_approval(monkeypatch):
+    """审批中断时运行停在 waiting_approval, 且 thread_id 与审批单一致"""
+    sid = await create_user_and_session("life_wait")
+    await start_approval_run(monkeypatch, sid)
+    run = (await get_runs(sid))[0]
+    approval = await get_approval(sid)
+    assert run.status == RunStatus.WAITING_APPROVAL
+    assert run.finished_at is None
+    assert run.error_code is None
+    assert approval is not None
+    assert approval.status == ApprovalStatus.PENDING.value
+    assert run.thread_id == approval.thread_id
+
+
+async def test_resume_after_approval_completes_same_run(monkeypatch):
+    """批准恢复后是同一条运行走到 succeeded, 不新建也不改 attempt"""
+    sid = await create_user_and_session("life_resume_ok")
+    await start_approval_run(monkeypatch, sid)
+    run_id = (await get_runs(sid))[0].id
+    approval_id = (await get_approval(sid)).id
+    reply = await resume_agent_session(approval_id, ApprovalStatus.APPROVED)
+    assert reply == "执行完毕"
+    runs = await get_runs(sid)
+    assert len(runs) == 1
+    assert runs[0].id == run_id
+    assert runs[0].status == RunStatus.SUCCEEDED
+    assert runs[0].attempt == 1
+    assert runs[0].finished_at is not None
+
+
+async def test_resume_after_rejection_completes_same_run(monkeypatch):
+    """拒绝审批同样让这条运行正常收尾为 succeeded"""
+    sid = await create_user_and_session("life_resume_no")
+    await start_approval_run(monkeypatch, sid, final="好的, 已取消")
+    run_id = (await get_runs(sid))[0].id
+    approval_id = (await get_approval(sid)).id
+    reply = await resume_agent_session(approval_id, ApprovalStatus.REJECTED)
+    assert reply == "好的, 已取消"
+    runs = await get_runs(sid)
+    assert len(runs) == 1
+    assert runs[0].id == run_id
+    assert runs[0].status == RunStatus.SUCCEEDED
+
+
+async def test_resume_failure_returns_run_to_waiting_approval(monkeypatch):
+    """恢复失败时审批退回 pending, 运行退回 waiting_approval 并记下原因, 之后仍可再次批准"""
+    sid = await create_user_and_session("life_resume_fail")
+    await start_approval_run(monkeypatch, sid)
+    run_id = (await get_runs(sid))[0].id
+    approval_id = (await get_approval(sid)).id
+
+    # 第一次恢复: 模型抛异常
+    patch_agent_deps(monkeypatch, RaisingModel(RuntimeError("模型炸了")))
+    with pytest.raises(RuntimeError):
+        await resume_agent_session(approval_id, ApprovalStatus.APPROVED)
+
+    run = (await get_runs(sid))[0]
+    assert run.id == run_id
+    assert run.status == RunStatus.WAITING_APPROVAL  # 不是 failed: 审批已退回, 还能再批
+    assert run.error_code == "internal_error"
+    assert run.finished_at is None
+    assert (await get_approval(sid)).status == ApprovalStatus.PENDING.value
+
+    # 第二次恢复: 模型正常, 同一条运行走到终态
+    patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="执行完毕")]))
+    reply = await resume_agent_session(approval_id, ApprovalStatus.APPROVED)
+    assert reply == "执行完毕"
+    final = (await get_runs(sid))[0]
+    assert final.id == run_id
+    assert final.status == RunStatus.SUCCEEDED
+    assert final.finished_at is not None
+
+
+# ---------- 失败与打断路径 ----------
+
+
+async def test_failure_after_registration_marks_run_failed(monkeypatch):
+    """登记之后失败: 运行标记 failed 并写入 internal_error"""
+    patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="不会用到")]))
+    sid = await create_user_and_session("life_fail")
+    patch_history_failure(monkeypatch, RuntimeError("重建历史失败"))
+    with pytest.raises(RuntimeError):
+        await run_agent_session(sid, "你好")
+    run = (await get_runs(sid))[0]
+    assert run.status == RunStatus.FAILED
+    assert run.error_code == "internal_error"
+    assert run.finished_at is not None
+
+
+async def test_business_exception_error_code_is_recorded(monkeypatch):
+    """业务异常的错误码原样记录, 不退化成 internal_error"""
+    patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="不会用到")]))
+    sid = await create_user_and_session("life_biz_err")
+    patch_history_failure(monkeypatch, ConflictError("会话状态冲突"))
+    with pytest.raises(ConflictError):
+        await run_agent_session(sid, "你好")
+    assert (await get_runs(sid))[0].error_code == "conflict"
+
+
+async def test_cancelled_run_has_no_error_code(monkeypatch):
+    """打断收尾为 cancelled, 不写错误码(打断不是错误)"""
+    patch_agent_deps(monkeypatch, SlowModel(seconds=30))
+    sid = await create_user_and_session("life_cancel")
+    task = asyncio.create_task(run_agent_session(sid, "开始长任务"))
+    await asyncio.sleep(0.3)
+    assert request_cancel_session(sid) is True
+    with pytest.raises(RunCancelledError):
+        await task
+    run = (await get_runs(sid))[0]
+    assert run.status == RunStatus.CANCELLED
+    assert run.error_code is None
+    assert run.finished_at is not None
+
+
+async def test_finalize_failure_does_not_mask_original_error(monkeypatch):
+    """收尾自身失败时原始异常仍然原样传播, 运行卡在 running 等租约兜底"""
+    patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="不会用到")]))
+    sid = await create_user_and_session("life_mask")
+    patch_history_failure(monkeypatch, RuntimeError("原始错误"))
+
+    async def boom(db, run_id, *, error_code):
+        raise RuntimeError("收尾失败")
+
+    monkeypatch.setattr(runs_crud, "mark_run_failed", boom)
+    with pytest.raises(RuntimeError) as exc:
+        await run_agent_session(sid, "你好")
+    assert "原始错误" in str(exc.value)
+    assert (await get_runs(sid))[0].status == RunStatus.RUNNING
+
+
+# ---------- 不产生运行记录的路径 ----------
+
+
+async def test_pending_approval_blocks_new_run_without_creating_row(monkeypatch):
+    """存在待审批时新一轮被拒绝, 既不新增运行记录也不动旧记录"""
+    sid = await create_user_and_session("life_blocked")
+    await start_approval_run(monkeypatch, sid)
+    assert len(await get_runs(sid)) == 1
+    patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="不会用到")]))
+    with pytest.raises(ValueError):
+        await run_agent_session(sid, "新对话")
+    runs = await get_runs(sid)
+    assert len(runs) == 1
+    assert runs[0].status == RunStatus.WAITING_APPROVAL
+
+
+async def test_generation_mismatch_leaves_no_run_row(monkeypatch):
+    """排队期间被取消: 这一轮从未开始, 不留下运行记录"""
+    patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="不会用到")]))
+    sid = await create_user_and_session("life_gen")
+    generations = iter([1, 2])
+    monkeypatch.setattr(runner, "get_cancel_generation", lambda session_id: next(generations))
+    with pytest.raises(RunCancelledError):
+        await run_agent_session(sid, "你好")
+    assert await get_runs(sid) == []
+
+
+# ---------- 重试 ----------
+
+
+async def test_retry_creates_new_run_with_next_attempt(monkeypatch):
+    """重试新建一条 attempt=2 的运行, 旧运行原样保留(审计账本)"""
+    patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="旧回答"), AIMessage(content="新回答")]))
+    sid = await create_user_and_session("life_retry")
+    first = await run_agent_session(sid, "旧问题")
+    assert first.content == "旧回答"
+    message_id = await first_user_message_id(sid)
+    second = await retry_agent_session(sid, message_id, "新问题")
+    assert second.content == "新回答"
+    runs = await get_runs(sid)
+    assert len(runs) == 2
+    assert [(item.attempt, item.status) for item in runs] == [
+        (1, RunStatus.SUCCEEDED),
+        (2, RunStatus.SUCCEEDED),
+    ]
+    assert runs[0].input_message_id == message_id
+    assert runs[1].input_message_id == message_id
