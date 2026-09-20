@@ -168,8 +168,8 @@ async def test_resume_after_rejection_completes_same_run(monkeypatch):
     assert runs[0].status == RunStatus.SUCCEEDED
 
 
-async def test_resume_failure_returns_run_to_waiting_approval(monkeypatch):
-    """恢复失败时审批退回 pending, 运行退回 waiting_approval 并记下原因, 之后仍可再次批准"""
+async def test_resume_failure_marks_run_failed_and_keeps_approval(monkeypatch):
+    """恢复失败时运行判为 failed, 已作出的批准保留, 同一张审批单不能再次决定"""
     sid = await create_user_and_session("life_resume_fail")
     await start_approval_run(monkeypatch, sid)
     run_id = (await get_runs(sid))[0].id
@@ -182,19 +182,16 @@ async def test_resume_failure_returns_run_to_waiting_approval(monkeypatch):
 
     run = (await get_runs(sid))[0]
     assert run.id == run_id
-    assert run.status == RunStatus.WAITING_APPROVAL  # 不是 failed: 审批已退回, 还能再批
+    assert run.status == RunStatus.FAILED  # 失败事实明确, 不再退回等待审批
     assert run.error_code == "internal_error"
-    assert run.finished_at is None
-    assert (await get_approval(sid)).status == ApprovalStatus.PENDING.value
+    assert run.finished_at is not None
+    # 批准是不可回退事实: 决定已提交, 不会退回 pending
+    assert (await get_approval(sid)).status == ApprovalStatus.APPROVED.value
 
-    # 第二次恢复: 模型正常, 同一条运行走到终态
-    patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="执行完毕")]))
-    reply = await resume_agent_session(approval_id, ApprovalStatus.APPROVED)
-    assert reply == "执行完毕"
-    final = (await get_runs(sid))[0]
-    assert final.id == run_id
-    assert final.status == RunStatus.SUCCEEDED
-    assert final.finished_at is not None
+    # 同一张审批单不能再次决定, 且被拒绝时不会改动已终态的运行
+    with pytest.raises(ValueError, match="审批单已处理"):
+        await resume_agent_session(approval_id, ApprovalStatus.APPROVED)
+    assert (await get_runs(sid))[0].status == RunStatus.FAILED
 
 
 # ---------- 失败与打断路径 ----------
