@@ -48,7 +48,7 @@ from app.schemas.enums import (
 )
 from app.schemas.error_code import CommonErrorCode
 from app.schemas.todos import TodoItem, TodoStatus
-from app.utils.errors import Error
+from app.utils.errors import ConflictError, Error
 
 logger = logging.getLogger(__name__)
 
@@ -314,15 +314,26 @@ async def resume_agent_session(
                     if approval.status != ApprovalStatus.PENDING.value:
                         raise ValueError("审批单已处理")
 
-                    # 更新审批单
+                    # 领取运行的执行权
+                    existing = await runs_crud.get_run_by_thread_id(db, thread_id)
+                    # 运行不存在
+                    if existing is None:
+                        logger.warning("审批恢复找不到对应的运行记录: thread_id=%s", thread_id)
+                        raise ConflictError(message="审批恢复对应的运行记录不存在")
+                    # 运行无法流转
+                    if not await runs_crud.mark_run_started(db, existing.id):
+                        logger.warning("运行状态未能流转至 running: run_id=%s", existing.id)
+                        raise ConflictError(message="运行状态不允许流转至 running, 恢复图运行失败")
+                    run_id = existing.id
+
+                    # 领取成功后记录审批决定
                     await approvals_crud.update_approval(db, approval_id, decision, scope)
                     await db.commit()
-
                     logger.info(
                         "审批决定: approval_id=%s, decision=%s, scope=%s", approval_id, decision.value, scope.value
                     )
 
-                    # 发布审批结束事件到总线
+                    # 发布审批结束事件
                     await event_bus.publish(
                         AgentEvent(
                             event_type=EventType.APPROVAL_RESULT,
@@ -330,15 +341,6 @@ async def resume_agent_session(
                             data=ApprovalResultResponse(approval_id=approval.id, status=decision),
                         )
                     )
-
-                    # 确认审批恢复的是同一轮运行
-                    existing = await runs_crud.get_run_by_thread_id(db, thread_id)
-                    run_id = existing.id if existing is not None else None
-                    if run_id is None:
-                        logger.warning("审批恢复找不到对应的运行记录: thread_id=%s", thread_id)
-                    elif not await runs_crud.mark_run_started(db, run_id):
-                        logger.warning("运行状态未能推进到 running: run_id=%s", run_id)
-                    await db.commit()
 
                     # 恢复图的执行
                     config = {"configurable": {"thread_id": thread_id}}

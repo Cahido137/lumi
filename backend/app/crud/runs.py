@@ -159,7 +159,8 @@ async def mark_run_started(db: AsyncSession, run_id: str) -> bool:
     Returns:
         bool: 是否成功流转。
     """
-    return await _advance(db, run_id, RunStatus.RUNNING, started_at=text("clock_timestamp()"))
+    # 使用 COALESCE 写入，防止审批恢复重新开始运行时覆盖 started_at 的值
+    return await _advance(db, run_id, RunStatus.RUNNING, started_at=text("COALESCE(started_at, clock_timestamp())"))
 
 
 async def mark_run_waiting_approval(db: AsyncSession, run_id: str, *, error_code: str | None = None) -> bool:
@@ -190,7 +191,8 @@ async def mark_run_succeeded(db: AsyncSession, run_id: str) -> bool:
     Returns:
         bool: 是否成功流转。
     """
-    return await _advance(db, run_id, RunStatus.SUCCEEDED, finished_at=text("clock_timestamp()"))
+    # 成功运行清空错误码
+    return await _advance(db, run_id, RunStatus.SUCCEEDED, error_code=None, finished_at=text("clock_timestamp()"))
 
 
 async def mark_run_failed(db: AsyncSession, run_id: str, *, error_code: str) -> bool:
@@ -215,7 +217,8 @@ async def mark_run_cancelled(db: AsyncSession, run_id: str) -> bool:
     Returns:
         bool: 是否成功流转。
     """
-    return await _advance(db, run_id, RunStatus.CANCELLED, finished_at=text("clock_timestamp()"))
+    # 取消运行清空错误码
+    return await _advance(db, run_id, RunStatus.CANCELLED, error_code=None, finished_at=text("clock_timestamp()"))
 
 
 async def request_run_cancel(db: AsyncSession, run_id: str) -> bool:
