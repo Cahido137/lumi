@@ -73,7 +73,7 @@ async def _finalize_run(run_id: str | None, outcome: RunStatus | None, error_cod
     Args:
         run_id: 运行记录ID, 从未登记为 None。
         outcome: 运行结果状态, 为 None 时表示无需收尾。
-        error_code: 失败或退回等待审批时的错误码。
+        error_code: 失败时的错误码。
     """
     # 还没有运行记录或无需收尾
     if run_id is None or outcome is None:
@@ -89,7 +89,7 @@ async def _finalize_run(run_id: str | None, outcome: RunStatus | None, error_cod
             elif outcome is RunStatus.CANCELLED:
                 await runs_crud.mark_run_cancelled(db, run_id)
             elif outcome is RunStatus.WAITING_APPROVAL:
-                await runs_crud.mark_run_waiting_approval(db, run_id, error_code=error_code)
+                await runs_crud.mark_run_waiting_approval(db, run_id)
             await db.commit()
     except Exception:
         logger.exception("运行状态收尾失败: run_id=%s, outcome=%s", run_id, outcome)
@@ -280,7 +280,16 @@ async def run_agent_session(session_id: str, content: str, *, user_message_id: s
 async def resume_agent_session(
     approval_id: str, decision: ApprovalStatus, scope: ApprovalScope = ApprovalScope.ONE_TIME
 ) -> str | None:
-    """审批完成，恢复图的执行"""
+    """审批完成，恢复图的执行。
+
+    Args:
+        approval_id: 审批单ID。
+        decision: 审批决定。
+        scope: 审批授权范围。
+
+    Returns:
+        如果成功运行结束, 返回模型最后的回答。
+    """
     # 先取出审批单拿到会话ID, 用于获取会话锁
     async with SessionLocal() as db:
         approval = await approvals_crud.get_approval_by_id(db, approval_id)  # 拿到审批单
@@ -358,10 +367,11 @@ async def resume_agent_session(
                     except RunCancelledError:
                         raise
                     except Exception as e:
-                        # 出现异常回滚审批单
-                        await approvals_crud.revert_approval(db, approval_id)
-                        await db.commit()
-                        outcome = RunStatus.WAITING_APPROVAL  # 设定运行状态为等待审批
+                        try:
+                            await db.commit()
+                        except Exception:
+                            logger.exception("恢复失败后提交失败: run_id=%s", run_id)
+                        outcome = RunStatus.FAILED  # 确认运行失败, 运行结束
                         run_error_code = _error_code_of(e)  # 记录错误码
                         await event_bus.publish(
                             AgentEvent(

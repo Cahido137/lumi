@@ -144,25 +144,6 @@ async def has_pending_approval(db: AsyncSession, session_id: str) -> bool:
     return result.first() is not None
 
 
-async def revert_approval(db: AsyncSession, approval_id: str) -> None:
-    """回滚审批单状态回 pending, 并清空授权范围与决定时间。
-
-    Args:
-        approval_id: 审批单ID。
-
-    Note:
-        用于审批通过后但是恢复图失败的场景。
-        回滚的审批单将会作废先前的决定, 允许重新审批。
-    """
-    stmt = (
-        update(Approval)
-        .where(Approval.id == approval_id)
-        .values(status=ApprovalStatus.PENDING.value, scope=ApprovalScope.ONE_TIME.value, decided_at=None)
-    )
-    await db.execute(stmt)
-    await db.flush()
-
-
 async def delete_approval_after(db: AsyncSession, session_id: str, created_at: datetime) -> None:
     """删除指定会话中某个时间点之后创建的所有审批单。
 

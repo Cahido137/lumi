@@ -163,12 +163,11 @@ async def mark_run_started(db: AsyncSession, run_id: str) -> bool:
     return await _advance(db, run_id, RunStatus.RUNNING, started_at=text("COALESCE(started_at, clock_timestamp())"))
 
 
-async def mark_run_waiting_approval(db: AsyncSession, run_id: str, *, error_code: str | None = None) -> bool:
+async def mark_run_waiting_approval(db: AsyncSession, run_id: str) -> bool:
     """把运行推进到 waiting_approval。
 
     Args:
         run_id: 运行记录ID。
-        error_code: 上一次尝试的失败稳定错误码, 恢复失败后退回等待审批时填写。
 
     Returns:
         bool: 是否成功流转。
@@ -176,10 +175,8 @@ async def mark_run_waiting_approval(db: AsyncSession, run_id: str, *, error_code
     Note:
         等待审批不是结束, 因此本函数是五个 mark_ 里唯一不写 finished_at 的。
     """
-    values: dict[str, str] = {}
-    if error_code is not None:
-        values["error_code"] = error_code
-    return await _advance(db, run_id, RunStatus.WAITING_APPROVAL, **values)
+    # 等待审批状态为正常状态，不需要传递错误码
+    return await _advance(db, run_id, RunStatus.WAITING_APPROVAL)
 
 
 async def mark_run_succeeded(db: AsyncSession, run_id: str) -> bool:
