@@ -5,13 +5,14 @@ import asyncio
 import httpx
 import pytest
 from app.core.graph import builder
-from app.core.session_runner import RunCancelledError, run_agent_session
-from app.db.models import Run
+from app.core.session_runner import RunCancelledError, resume_agent_session, run_agent_session
+from app.db.models import Approval, Run
 from app.db.session import SessionLocal
 from app.main import app
-from app.schemas.enums import RunStatus
+from app.schemas.enums import ApprovalStatus, RunStatus
+from langchain_core.messages import AIMessage
 from sqlalchemy import select
-from tests.fakes import FakePlanner, SlowModel
+from tests.fakes import FakePlanner, FakeTool, ScriptedModel, SlowModel
 
 
 def patch_agent_deps(monkeypatch, model, tools=None):
@@ -47,6 +48,14 @@ async def create_session(client, token_data):
     res = await client.post("/api/sessions/create", json={"title": "取消会话"}, headers=auth_header(token_data))
     assert res.status_code == 200
     return res.json()["data"]["id"]
+
+
+async def get_pending_approval(session_id) -> Approval | None:
+    """取会话中尚未决定的审批单"""
+    async with SessionLocal() as db:
+        return await db.scalar(
+            select(Approval).where(Approval.session_id == session_id, Approval.status == ApprovalStatus.PENDING.value)
+        )
 
 
 async def get_runs(session_id) -> list[Run]:
@@ -90,3 +99,42 @@ async def test_cancel_endpoint_without_active_run_changes_nothing(client):
     body = res.json()
     assert body["data"]["cancelled"] is False
     assert await get_runs(sid) == []
+
+
+async def test_cancel_waiting_approval_terminates_run_and_invalidates_approval(client, monkeypatch):
+    """等待审批时取消: 运行进终态, 待决审批失效, 事后再批准不会启动执行"""
+    tool_call = {"name": "run_shell", "args": {"command": "dir"}, "id": "c1"}
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel([AIMessage(content="", tool_calls=[tool_call])]),
+        tools={"run_shell": FakeTool("run_shell", result="目录列表")},
+    )
+    token = await register_user(client, "cancel_wait")
+    sid = await create_session(client, token)
+    assert await run_agent_session(sid, "列目录") is None
+    assert (await get_runs(sid))[0].status == RunStatus.WAITING_APPROVAL
+    approval = await get_pending_approval(sid)
+    assert approval is not None
+
+    res = await client.post(f"/api/sessions/{sid}/cancel", headers=auth_header(token))
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["cancelled"] is True
+    assert data["status"] == RunStatus.CANCELLED.value
+
+    run = (await get_runs(sid))[0]
+    assert run.status == RunStatus.CANCELLED
+    assert run.finished_at is not None
+    assert run.error_code is None
+
+    # 尚未决定的审批失效; 取消不是人工决定, 因此不写 decided_at
+    async with SessionLocal() as db:
+        after = await db.get(Approval, approval.id)
+    assert after.status == ApprovalStatus.CANCELLED.value
+    assert after.decided_at is None
+
+    # 事后再批准不得启动执行: 空脚本模型若被调用会抛 IndexError, 而不是这里的 ValueError
+    patch_agent_deps(monkeypatch, ScriptedModel([]))
+    with pytest.raises(ValueError, match="审批单已处理"):
+        await resume_agent_session(approval.id, ApprovalStatus.APPROVED)
+    assert (await get_runs(sid))[0].status == RunStatus.CANCELLED

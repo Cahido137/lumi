@@ -194,6 +194,27 @@ async def test_resume_failure_marks_run_failed_and_keeps_approval(monkeypatch):
     assert (await get_runs(sid))[0].status == RunStatus.FAILED
 
 
+async def test_finalize_does_not_override_terminal_run(monkeypatch):
+    """取消先提交时, 后到的成功收尾不得改写终态, 且冲突必须留下可检测记录"""
+    sid = await create_user_and_session("life_race")
+    async with SessionLocal() as db:
+        run = await runs_crud.create_run(db, sid, f"{sid}:race")
+        await runs_crud.mark_run_started(db, run.id)
+        await runs_crud.mark_run_cancelled(db, run.id)
+        await db.commit()
+        run_id = run.id
+
+    warnings: list[str] = []
+    monkeypatch.setattr(runner.logger, "warning", lambda msg, *args: warnings.append(msg % args))
+    await runner._finalize_run(run_id, RunStatus.SUCCEEDED)
+
+    async with SessionLocal() as db:
+        final = await db.get(Run, run_id)
+    assert final.status == RunStatus.CANCELLED, "已提交的终态被后到的收尾改写了"
+    assert final.finished_at is not None
+    assert any("运行收尾未生效" in item for item in warnings), "收尾未生效却没有留下可检测记录"
+
+
 # ---------- 失败与打断路径 ----------
 
 
