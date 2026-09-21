@@ -154,6 +154,9 @@ class ApprovalStatus(StrEnum):
     REJECTED = "rejected"
     """审批拒绝状态。"""
 
+    CANCELLED = "cancelled"
+    """审批因所属运行被取消而失效, 不再接受审批。"""
+
 
 class ApprovalScope(StrEnum):
     """批准工具调用时所授予的授权范围。

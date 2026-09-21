@@ -201,7 +201,7 @@ class Approval(Base):
         ForeignKey(ToolExecution.id, ondelete="CASCADE"), index=True, comment="关联工具执行ID"
     )
     status: Mapped[str] = mapped_column(
-        String(20), default="pending", comment="pending=待审批, approved=已批准, rejected=已拒绝"
+        String(20), default="pending", comment="pending=待审批, approved=已批准, rejected=已拒绝, cancelled=已取消"
     )
     scope: Mapped[str] = mapped_column(
         String(20),

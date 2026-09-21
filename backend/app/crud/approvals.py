@@ -144,6 +144,27 @@ async def has_pending_approval(db: AsyncSession, session_id: str) -> bool:
     return result.first() is not None
 
 
+async def cancel_pending_approvals(db: AsyncSession, thread_id: str) -> int:
+    """把某一轮运行中尚未决定的审批单设置为 cancelled。
+
+    Args:
+        thread_id: 被取消运行的检查点线程ID。
+
+    Returns:
+        int: 实际失效的审批单条数。
+    """
+    stmt = (
+        update(Approval)
+        .where(Approval.thread_id == thread_id, Approval.status == ApprovalStatus.PENDING.value)
+        .values(status=ApprovalStatus.CANCELLED.value)
+        .returning(Approval.id)
+    )
+    result = await db.execute(stmt)
+    count = len(result.scalars().all())
+    await db.flush()
+    return count
+
+
 async def delete_approval_after(db: AsyncSession, session_id: str, created_at: datetime) -> None:
     """删除指定会话中某个时间点之后创建的所有审批单。
 

@@ -225,11 +225,15 @@ async def request_run_cancel(db: AsyncSession, run_id: str) -> bool:
         run_id: 运行记录ID。
 
     Returns:
-        bool: 首次登记成功返回 True, 运行不存在或已登记过返回 False。
+        bool: 首次登记成功返回 True, 运行不存在、运行结束或已登记过返回 False。
     """
     stmt = (
         update(Run)
-        .where(Run.id == run_id, Run.cancel_requested_at.is_(None))
+        .where(
+            Run.id == run_id,
+            Run.cancel_requested_at.is_(None),
+            Run.status.not_in([item.value for item in TERMINAL_RUN_STATUSES]),
+        )
         .values(cancel_requested_at=text("clock_timestamp()"))
         .returning(Run.id)
     )

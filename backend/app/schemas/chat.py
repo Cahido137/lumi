@@ -103,3 +103,6 @@ class CancelResponse(BaseModel):
 
     cancelled: bool = Field(..., description="是否存在被打断的运行")
     """是否存在被打断的运行。"""
+
+    status: str | None = Field(None, description="处理后运行的当前状态")
+    """处理后运行的当前状态。"""

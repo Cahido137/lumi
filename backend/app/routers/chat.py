@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, get_owned_session_or_404
+from app.core.run_state import is_terminal
 from app.core.session_runner import RunCancelledError, request_cancel_session, retry_agent_session, run_agent_session
+from app.crud import approvals as approvals_crud
 from app.crud import messages as messages_crud
 from app.crud import runs as runs_crud
 from app.db.models import User
@@ -19,6 +21,7 @@ from app.schemas.chat import (
     MessageSingleResponse,
     RetryRequest,
 )
+from app.schemas.enums import RunStatus
 from app.utils.response import success_response
 
 router = APIRouter(prefix="/api/sessions", tags=["chat"])
@@ -115,6 +118,7 @@ async def cancel_run(
     Returns:
         JSONResponse: 三段式信封, data 载荷为 CancelResponse。
         cancelled 字段为 False 时表示当前没有正在运行的对话。
+        status 反馈处理之后该运行的状态。
 
     Raises:
         HTTPException 401: 未登录或令牌无效。
@@ -122,14 +126,39 @@ async def cancel_run(
     """
     await get_owned_session_or_404(db, str(session_id), current_user)
     active_run = await runs_crud.get_active_run(db, str(session_id))  # 获取当前尚未结束的运行
-    # 如果确实存在尚未结束的运行
-    if active_run is not None:
-        await runs_crud.request_run_cancel(db, active_run.id)  # 登记打断请求
-        await db.commit()
-    cancelled = request_cancel_session(str(session_id))  # 发送打断请求
+    if active_run is None:
+        # 数据库内没有正在运行的Run, 仍然清除一次进程内信号, 清除可能仍然在排队的任务
+        request_cancel_session(str(session_id))
+        return success_response(
+            message="当前没有正在运行的对话",
+            data=CancelResponse(sessionId=str(session_id), cancelled=False, status=None),
+        )
+
+    terminated = False  # 是否已经到达终态
+    # 如果此时是等待审批状态
+    if active_run.status == RunStatus.WAITING_APPROVAL.value:
+        terminated = await runs_crud.mark_run_cancelled(db, active_run.id)
+    # 如果成功流转到取消状态，取消所有还未审批的审批单
+    if terminated:
+        await approvals_crud.cancel_pending_approvals(db, active_run.thread_id)
+    # 如果没有成功流转，登记打断请求
+    if not terminated:
+        await runs_crud.request_run_cancel(db, active_run.id)
+    await db.commit()
+
+    current = await runs_crud.get_run_by_id(db, active_run.id)
+    status = None if current is None else current.status
+    if terminated:
+        message = "运行已取消"
+        cancelled = True
+    elif status is not None and is_terminal(status):
+        message = "运行已结束"
+        cancelled = False
+    else:
+        cancelled = request_cancel_session(str(session_id))  # 发送打断请求
+        message = "已发送打断请求" if cancelled else "当前没有正在运行的对话"
     return success_response(
-        message="已发送打断请求" if cancelled else "当前没有正在运行的对话",
-        data=CancelResponse(sessionId=str(session_id), cancelled=cancelled),
+        message=message, data=CancelResponse(sessionId=str(session_id), cancelled=cancelled, status=status)
     )
 
 
