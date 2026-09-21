@@ -319,3 +319,69 @@ async def test_retry_creates_new_run_with_next_attempt(monkeypatch):
     ]
     assert runs[0].input_message_id == message_id
     assert runs[1].input_message_id == message_id
+
+
+async def test_retry_while_waiting_approval_terminates_old_run(monkeypatch):
+    """等待审批时重试: 旧运行被终结且记录保留, 新运行接管同一条输入"""
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(content="", tool_calls=[tool_call("run_shell", {"command": "dir"}, "c1")]),
+                AIMessage(content="重试后的回答"),
+            ]
+        ),
+        tools={"run_shell": FakeTool("run_shell", result="目录列表")},
+    )
+    sid = await create_user_and_session("life_retry_wait")
+    assert await run_agent_session(sid, "列目录") is None
+    old_run = (await get_runs(sid))[0]
+    assert old_run.status == RunStatus.WAITING_APPROVAL
+    message_id = await first_user_message_id(sid)
+
+    reply = await retry_agent_session(sid, message_id, None)
+    assert reply.content == "重试后的回答"
+
+    runs = await get_runs(sid)
+    assert len(runs) == 2
+    by_attempt = {item.attempt: item for item in runs}
+    # 旧运行进了终态, 但记录本身保留, 不是被删掉
+    assert by_attempt[1].id == old_run.id
+    assert by_attempt[1].status == RunStatus.CANCELLED
+    assert by_attempt[1].finished_at is not None
+    # 新运行接管, 重试链靠 input_message_id + attempt 保持可追溯
+    assert by_attempt[2].status == RunStatus.SUCCEEDED
+    assert by_attempt[1].input_message_id == message_id
+    assert by_attempt[2].input_message_id == message_id
+    # 待决审批已随既有清理逻辑删除, 不会阻塞新一轮
+    assert await get_approval(sid) is None
+
+
+async def test_retry_while_running_returns_conflict(monkeypatch):
+    """仍有运行在执行时重试返回冲突, 且不删除任何既有记录"""
+    patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="旧回答")]))
+    sid = await create_user_and_session("life_retry_busy")
+    first = await run_agent_session(sid, "旧问题")
+    assert first.content == "旧回答"
+    message_id = await first_user_message_id(sid)
+    # 造一条仍在执行中的运行, 模拟"还有执行方没停下"
+    async with SessionLocal() as db:
+        busy = await runs_crud.create_run(db, sid, f"{sid}:busy")
+        await runs_crud.mark_run_started(db, busy.id)
+        await db.commit()
+        busy_id = busy.id
+    async with SessionLocal() as db:
+        before = len(list((await db.execute(select(Message).where(Message.session_id == sid))).scalars()))
+
+    with pytest.raises(ConflictError):
+        await retry_agent_session(sid, message_id, "新问题")
+
+    async with SessionLocal() as db:
+        after = len(list((await db.execute(select(Message).where(Message.session_id == sid))).scalars()))
+        busy_run = await db.get(Run, busy_id)
+    assert after == before, "被拒绝的重试仍然删除了消息"
+    assert busy_run.status == RunStatus.RUNNING, "被拒绝的重试改写了运行状态"
+    assert [(item.attempt, item.status) for item in await get_runs(sid)] == [
+        (1, RunStatus.SUCCEEDED),
+        (1, RunStatus.RUNNING),
+    ]
