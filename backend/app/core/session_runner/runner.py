@@ -504,6 +504,14 @@ async def retry_agent_session(session_id: str, message_id: str, new_content: str
                 if await messages_crud.has_user_message_after(db, session_id, message.created_at):
                     raise ValueError("该消息后存在新对话, 无法重试")
 
+                # 重新运行之前把旧的活动中运行终止
+                active_run = await runs_crud.get_active_run(db, session_id)
+                if active_run is not None:
+                    if active_run.status != RunStatus.WAITING_APPROVAL.value:
+                        raise ConflictError(message="会话正在运行中, 无法重新运行")
+                    if not await runs_crud.mark_run_cancelled(db, active_run.id):
+                        raise ConflictError(message="运行状态发生改变, 请重新重试")
+
                 # 检查消息是否被重新编辑了，重新编辑了才采用新消息，否则沿用旧消息
                 content = new_content if new_content is not None else message.content
                 # 清理此消息之后的残留
