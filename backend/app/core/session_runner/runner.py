@@ -80,16 +80,25 @@ async def _finalize_run(run_id: str | None, outcome: RunStatus | None, error_cod
         return
     try:
         async with SessionLocal() as db:
+            updated = True
             if outcome is RunStatus.SUCCEEDED:
-                await runs_crud.mark_run_succeeded(db, run_id)
+                updated = await runs_crud.mark_run_succeeded(db, run_id)
             elif outcome is RunStatus.FAILED:
-                await runs_crud.mark_run_failed(
+                updated = await runs_crud.mark_run_failed(
                     db, run_id, error_code=error_code or str(CommonErrorCode.INTERNAL_ERROR)
                 )
             elif outcome is RunStatus.CANCELLED:
-                await runs_crud.mark_run_cancelled(db, run_id)
+                updated = await runs_crud.mark_run_cancelled(db, run_id)
             elif outcome is RunStatus.WAITING_APPROVAL:
-                await runs_crud.mark_run_waiting_approval(db, run_id)
+                updated = await runs_crud.mark_run_waiting_approval(db, run_id)
+            if not updated:
+                current = await runs_crud.get_run_by_id(db, run_id)
+                logger.warning(
+                    "运行收尾未生效, 已被其他流转抢先: run_id=%s, 期望=%s, 实际=%s",
+                    run_id,
+                    outcome.value,
+                    "记录不存在" if current is None else current.status,
+                )
             await db.commit()
     except Exception:
         logger.exception("运行状态收尾失败: run_id=%s, outcome=%s", run_id, outcome)
