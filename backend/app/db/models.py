@@ -11,7 +11,21 @@ Note:
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Identity, Integer, String, Text, Uuid, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Identity,
+    Index,
+    Integer,
+    String,
+    Text,
+    Uuid,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -191,6 +205,12 @@ class Approval(Base):
     """
 
     __tablename__ = "approvals"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'cancelled')",
+            name="ck_approvals_status",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="审批唯一标识ID")
     session_id: Mapped[str] = mapped_column(
@@ -218,12 +238,25 @@ class Run(Base):
     """运行表, 记录一次 Agent 运行。"""
 
     __tablename__ = "runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'waiting_approval', 'succeeded', 'failed', 'cancelled')",
+            name="ck_runs_status",
+        ),
+        Index(
+            "uq_runs_one_active_session",
+            "session_id",
+            unique=True,
+            postgresql_where=text("status IN ('pending', 'running', 'waiting_approval')"),
+        ),
+        Index("uq_runs_thread_id", "thread_id", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="运行唯一标识ID")
     session_id: Mapped[str] = mapped_column(
         ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID"
     )
-    thread_id: Mapped[str] = mapped_column(String(200), index=True, comment="LangGraph线程ID, 每轮运行一个")
+    thread_id: Mapped[str] = mapped_column(String(200), comment="LangGraph线程ID, 每轮运行一个")
     status: Mapped[str] = mapped_column(
         String(20),
         default="pending",
