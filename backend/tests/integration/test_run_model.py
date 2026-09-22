@@ -167,8 +167,9 @@ async def test_foreign_key_delete_rules():
 
 async def test_status_column_fits_every_enum_value():
     """varchar(20) 装得下全部状态值, 最长的 waiting_approval 是 16 字符"""
-    session_id, _ = await create_session_with_message("run_status_width")
-    for status in RunStatus:
+    for index, status in enumerate(RunStatus):
+        # 每个状态各占一个会话: 同一会话同时只允许一条活动运行
+        session_id, _ = await create_session_with_message(f"run_st_{index}")
         run = await load_run(await create_run(session_id, thread_id=f"thread-{status.value}", status=status.value))
         assert run.status == status
     assert max(len(item.value) for item in RunStatus) == 16
@@ -184,6 +185,67 @@ async def test_status_column_rejects_overlong_value():
             await db.commit()
         await db.rollback()
     assert "value too long" in str(exc.value)
+
+
+# ---------- 准入约束: 状态取值与每会话一条活动运行 ----------
+
+
+async def test_status_check_constraint_rejects_unknown_value():
+    """状态取值由数据库 CHECK 兜底, 写入未知状态直接失败"""
+    session_id, _ = await create_session_with_message("run_status_check")
+    async with SessionLocal() as db:
+        db.add(Run(session_id=session_id, thread_id="t-bad", status="unknown"))
+        with pytest.raises(IntegrityError) as exc:
+            await db.commit()
+        await db.rollback()
+    assert "ck_runs_status" in str(exc.value)
+
+
+async def test_approval_status_check_constraint_rejects_unknown_value():
+    """审批状态同样受 CHECK 限制, 不能靠写入非法取值来撤销一张已决定的审批"""
+    session_id, _ = await create_session_with_message("run_appr_check")
+    async with SessionLocal() as db:
+        execution = await tool_executions_crud.create_pending_execution(
+            db, session_id, "run_shell", {"command": "ls"}, "call-check"
+        )
+        approval = await approvals_crud.create_approval(db, session_id, "thread-check", execution.id)
+        approval.status = "revoked"
+        with pytest.raises(IntegrityError) as exc:
+            await db.commit()
+        await db.rollback()
+    assert "ck_approvals_status" in str(exc.value)
+
+
+async def test_second_active_run_in_same_session_is_rejected():
+    """同一会话已有活动运行时, 数据库拒绝第二条, 不依赖应用层自觉"""
+    session_id, _ = await create_session_with_message("run_admission_busy")
+    await create_run(session_id, thread_id="thread-first")
+    with pytest.raises(IntegrityError) as exc:
+        await create_run(session_id, thread_id="thread-second")
+    assert "uq_runs_one_active_session" in str(exc.value)
+
+
+@pytest.mark.parametrize("status", [RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED])
+async def test_terminal_run_frees_the_session_slot(status: RunStatus):
+    """旧运行进入任一终态后释放名额, 同一会话可以登记新的运行"""
+    session_id, _ = await create_session_with_message(f"slot_{status.value[:4]}")
+    first = await create_run(session_id, thread_id="thread-first")
+    async with SessionLocal() as db:
+        run = await db.get(Run, first)
+        run.status = status.value
+        await db.commit()
+    second = await create_run(session_id, thread_id="thread-second")
+    assert (await load_run(second)).status == RunStatus.PENDING
+
+
+async def test_thread_id_is_unique_across_runs():
+    """一个 thread_id 只属于一条运行, 跨会话也不允许复用"""
+    first_session, _ = await create_session_with_message("run_thread_a")
+    second_session, _ = await create_session_with_message("run_thread_b")
+    await create_run(first_session, thread_id="thread-shared")
+    with pytest.raises(IntegrityError) as exc:
+        await create_run(second_session, thread_id="thread-shared")
+    assert "uq_runs_thread_id" in str(exc.value)
 
 
 # ---------- 时间戳语义 ----------
@@ -242,11 +304,37 @@ async def test_thread_id_joins_with_approvals():
 
 
 async def test_indexes_exist_in_database():
-    """迁移建出的三个索引确实存在于库中"""
+    """迁移建出的索引确实存在于库中, thread_id 的普通索引已被唯一索引取代"""
     async with SessionLocal() as db:
         rows = await db.execute(text("SELECT indexname FROM pg_indexes WHERE tablename = 'runs'"))
     names = set(rows.scalars().all())
-    assert {"ix_runs_session_id", "ix_runs_thread_id", "ix_runs_input_message_id"} <= names
+    assert {"ix_runs_session_id", "ix_runs_input_message_id", "uq_runs_thread_id"} <= names
+    assert "ix_runs_thread_id" not in names
+
+
+async def test_admission_constraints_exist_in_database():
+    """活动运行唯一索引的谓词与状态 CHECK 真实存在于库中, 不是只写在模型里"""
+    async with SessionLocal() as db:
+        index_rows = await db.execute(text("SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'runs'"))
+        check_rows = await db.execute(
+            text(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'runs'::regclass AND contype = 'c'"
+            )
+        )
+    indexes = dict(index_rows.all())
+    checks = dict(check_rows.all())
+
+    active_index = indexes["uq_runs_one_active_session"]
+    assert active_index.startswith("CREATE UNIQUE INDEX")
+    for status in (RunStatus.PENDING, RunStatus.RUNNING, RunStatus.WAITING_APPROVAL):
+        assert status.value in active_index
+    # 终态不占名额, 因此不在谓词里; 谓词一旦漏掉或多写, 这条就会红
+    for status in (RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED):
+        assert status.value not in active_index
+
+    for status in RunStatus:
+        assert status.value in checks["ck_runs_status"]
 
 
 async def test_column_comments_match_model():

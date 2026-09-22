@@ -115,18 +115,19 @@ async def test_get_active_run_ignores_terminal(status: RunStatus):
         assert await runs_crud.get_active_run(db, session_id) is None
 
 
-async def test_get_active_run_is_scoped_to_session_and_picks_newest():
-    """只查本会话, 且在同会话有多条时取最新的一条"""
+async def test_get_active_run_is_scoped_to_session_and_skips_history():
+    """只查本会话, 且跳过本会话已经终结的历史运行"""
     session_id = await create_session("crud_scope")
     other_id = await create_session("crud_scope_other")
-    old_run = await new_run(session_id, thread_id="thread-old")
+    history = await new_run(session_id, thread_id="thread-old")
+    await force_status(history, RunStatus.SUCCEEDED)  # 历史轮次先终结, 名额才轮得到下一轮
     await asyncio.sleep(0.01)
-    new = await new_run(session_id, thread_id="thread-new")
+    current = await new_run(session_id, thread_id="thread-new")
     await new_run(other_id, thread_id="thread-other")
     async with SessionLocal() as db:
         active = await runs_crud.get_active_run(db, session_id)
-    assert active.id == new
-    assert active.id != old_run
+    assert active.id == current
+    assert active.id != history
 
 
 async def test_list_runs_for_session_orders_newest_first_and_pages():
@@ -134,7 +135,10 @@ async def test_list_runs_for_session_orders_newest_first_and_pages():
     session_id = await create_session("crud_list")
     ids = []
     for index in range(3):
-        ids.append(await new_run(session_id, thread_id=f"thread-{index}"))
+        run_id = await new_run(session_id, thread_id=f"thread-{index}")
+        ids.append(run_id)
+        if index < 2:
+            await force_status(run_id, RunStatus.SUCCEEDED)  # 每会话只允许一条活动运行, 历史轮次先终结
         await asyncio.sleep(0.01)
     async with SessionLocal() as db:
         first_page = await runs_crud.list_runs_for_session(db, session_id, limit=2)
