@@ -246,7 +246,9 @@ async def _execute_submission(session_id: str, content: str, submission: Submiss
                     stream_result.interrupt.tool_input,
                     stream_result.interrupt.tool_call_id,
                 )
-                approval = await approvals_crud.create_approval(db, session_id, run_context.thread_id, execution.id)
+                approval = await approvals_crud.create_approval(
+                    db, session_id, run_id, run_context.thread_id, execution.id
+                )
                 await db.commit()
                 logger.info("工具待审批: approval_id=%s, tool=%s", approval.id, stream_result.interrupt.tool)
                 await event_bus.publish(
@@ -501,7 +503,9 @@ async def resume_agent_session(
                             stream_result.interrupt.tool_input,
                             stream_result.interrupt.tool_call_id,
                         )
-                        new_approval = await approvals_crud.create_approval(db, session_id, thread_id, execution.id)
+                        new_approval = await approvals_crud.create_approval(
+                            db, session_id, run_id, thread_id, execution.id
+                        )
                         await db.commit()
                         logger.info(
                             "恢复执行后再次出现审批: approval_id=%s, tool=%s",

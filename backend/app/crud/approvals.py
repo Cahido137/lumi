@@ -14,11 +14,14 @@ from app.db.models import Approval, ToolExecution
 from app.schemas.enums import ApprovalScope, ApprovalStatus
 
 
-async def create_approval(db: AsyncSession, session_id: str, thread_id: str, tool_execution_id: str) -> Approval:
+async def create_approval(
+    db: AsyncSession, session_id: str, run_id: str, thread_id: str, tool_execution_id: str
+) -> Approval:
     """创建一个新审批单。
 
     Args:
         session_id: 会话ID。
+        run_id: 所属运行ID。
         thread_id: 检查点线程ID。
         tool_execution_id: 被审批的工具执行记录。
 
@@ -30,6 +33,7 @@ async def create_approval(db: AsyncSession, session_id: str, thread_id: str, too
     """
     approval = Approval(
         session_id=session_id,
+        run_id=run_id,
         thread_id=thread_id,
         tool_execution_id=tool_execution_id,
         status=ApprovalStatus.PENDING.value,

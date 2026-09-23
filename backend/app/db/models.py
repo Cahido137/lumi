@@ -134,106 +134,6 @@ class Message(Base):
     )
 
 
-class Todo(Base):
-    """计划表, 用于保存任务步骤。
-
-    session_id 作为外键, 关联计划表所属的会话, 级联删除。
-    position 记录本步骤在步骤列表中的位置, 用作排序。
-    status 记录本步骤的执行状态。
-    """
-
-    __tablename__ = "todos"
-
-    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="任务唯一标识ID")
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID"
-    )
-    title: Mapped[str] = mapped_column(String(500), comment="任务描述")
-    status: Mapped[str] = mapped_column(
-        String(20), default="pending", comment="pending=待执行, in_progress=执行中, done=已完成, failed=执行失败"
-    )
-    position: Mapped[int] = mapped_column(Integer, default=0, comment="任务在计划中的序号")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), comment="任务创建时间"
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="状态变更时间"
-    )
-
-
-class ToolExecution(Base):
-    """工具执行表, 记录每一次工具调用的信息。
-
-    tool_call_id 记录发起本次工具调用的工具调用标识。
-    needs_approval 用于标记本工具是否需要经过审批。
-    status 用于标记工具执行状态。
-
-    Note:
-        待审批工具会在执行前就创建状态为 pending 的记录。
-    """
-
-    __tablename__ = "tool_executions"
-
-    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="工具唯一标识ID")
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID"
-    )
-    tool_name: Mapped[str] = mapped_column(String(100), comment="工具名称")
-    tool_call_id: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="发起该工具调用的tool_call_id")
-    tool_input: Mapped[dict] = mapped_column(JSONB, default=dict, comment="工具入参")
-    tool_output: Mapped[str | None] = mapped_column(Text, nullable=True, comment="工具输出")
-    status: Mapped[str] = mapped_column(
-        String(20), default="success", comment="success=成功, error=失败, pending=等待审批, rejected=已拒绝"
-    )
-    needs_approval: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否需要审批")
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), comment="开始执行时间"
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="结束执行时间")
-
-
-class Approval(Base):
-    """审批表, 记录需要审批工具的人工审批单。
-
-    tool_execution_id 作为外键, 关联被审批的工具执行记录, 级联删除。
-    status 表示审批单自身的状态。
-    scope 表示本次审批的授权范围。
-
-    Note:
-        thread_id 保存发起本次中断的 LangGraph 检查点线程标识。
-        同一轮运行可能产生多张审批单, 它们使用相同的 thread_id。
-    """
-
-    __tablename__ = "approvals"
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('pending', 'approved', 'rejected', 'cancelled')",
-            name="ck_approvals_status",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="审批唯一标识ID")
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID"
-    )
-    thread_id: Mapped[str] = mapped_column(String(200), comment="线程ID, 用于中断恢复")
-    tool_execution_id: Mapped[str] = mapped_column(
-        ForeignKey(ToolExecution.id, ondelete="CASCADE"), index=True, comment="关联工具执行ID"
-    )
-    status: Mapped[str] = mapped_column(
-        String(20), default="pending", comment="pending=待审批, approved=已批准, rejected=已拒绝, cancelled=已取消"
-    )
-    scope: Mapped[str] = mapped_column(
-        String(20),
-        default="one_time",
-        comment="one_time=批准这一次, command=始终允许此工具执行此命令, tool=始终允许此工具",
-    )
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="审批时间")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), comment="审批创建时间"
-    )
-
-
 class Run(Base):
     """运行表, 记录一次 Agent 运行。"""
 
@@ -303,4 +203,108 @@ class Run(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="状态变更时间"
+    )
+
+
+class Todo(Base):
+    """计划表, 用于保存任务步骤。
+
+    session_id 作为外键, 关联计划表所属的会话, 级联删除。
+    position 记录本步骤在步骤列表中的位置, 用作排序。
+    status 记录本步骤的执行状态。
+    """
+
+    __tablename__ = "todos"
+
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="任务唯一标识ID")
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID"
+    )
+    title: Mapped[str] = mapped_column(String(500), comment="任务描述")
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending", comment="pending=待执行, in_progress=执行中, done=已完成, failed=执行失败"
+    )
+    position: Mapped[int] = mapped_column(Integer, default=0, comment="任务在计划中的序号")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="任务创建时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="状态变更时间"
+    )
+
+
+class ToolExecution(Base):
+    """工具执行表, 记录每一次工具调用的信息。
+
+    tool_call_id 记录发起本次工具调用的工具调用标识。
+    needs_approval 用于标记本工具是否需要经过审批。
+    status 用于标记工具执行状态。
+
+    Note:
+        待审批工具会在执行前就创建状态为 pending 的记录。
+    """
+
+    __tablename__ = "tool_executions"
+
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="工具唯一标识ID")
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID"
+    )
+    tool_name: Mapped[str] = mapped_column(String(100), comment="工具名称")
+    tool_call_id: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="发起该工具调用的tool_call_id")
+    tool_input: Mapped[dict] = mapped_column(JSONB, default=dict, comment="工具入参")
+    tool_output: Mapped[str | None] = mapped_column(Text, nullable=True, comment="工具输出")
+    status: Mapped[str] = mapped_column(
+        String(20), default="success", comment="success=成功, error=失败, pending=等待审批, rejected=已拒绝"
+    )
+    needs_approval: Mapped[bool] = mapped_column(Boolean, default=False, comment="是否需要审批")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="开始执行时间"
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="结束执行时间")
+
+
+class Approval(Base):
+    """审批表, 记录需要审批工具的人工审批单。
+
+    tool_execution_id 作为外键, 关联被审批的工具执行记录, 级联删除。
+    run_id 作为外键, 关联审批所属的运行记录, 级联删除。
+    status 表示审批单自身的状态。
+    scope 表示本次审批的授权范围。
+
+    Note:
+        thread_id 保存发起本次中断的 LangGraph 检查点线程标识。
+        同一轮运行可能产生多张审批单, 它们使用相同的 thread_id。
+    """
+
+    __tablename__ = "approvals"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'cancelled')",
+            name="ck_approvals_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="审批唯一标识ID")
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID"
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey(Run.id, ondelete="CASCADE", name="approvals_run_id_fkey"), index=True, comment="所属运行ID"
+    )
+    thread_id: Mapped[str] = mapped_column(String(200), comment="线程ID, 用于中断恢复")
+    tool_execution_id: Mapped[str] = mapped_column(
+        ForeignKey(ToolExecution.id, ondelete="CASCADE"), index=True, comment="关联工具执行ID"
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending", comment="pending=待审批, approved=已批准, rejected=已拒绝, cancelled=已取消"
+    )
+    scope: Mapped[str] = mapped_column(
+        String(20),
+        default="one_time",
+        comment="one_time=批准这一次, command=始终允许此工具执行此命令, tool=始终允许此工具",
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="审批时间")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="审批创建时间"
     )
