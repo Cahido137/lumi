@@ -31,7 +31,7 @@ from app.core.session_runner.state import (
     unregister_pending_run,
 )
 from app.core.session_runner.stream import process_stream
-from app.core.session_runner.submission import submit_run
+from app.core.session_runner.submission import SUBMIT_KIND_RETRY, Submission, submit_run
 from app.crud import approvals as approvals_crud
 from app.crud import messages as messages_crud
 from app.crud import runs as runs_crud
@@ -143,46 +143,27 @@ async def _replay_submission(run_id: str) -> Message | None:
     raise ConflictError(message="请求对应的运行已结束, 没有可重放的回复")
 
 
-async def _run_agent_session_locked(
-    session_id: str,
-    content: str,
-    *,
-    user_message_id: str | None = None,
-    attempt: int = 1,
-    request_id: str | None = None,
-) -> Message | None:
-    """执行一轮 Agent 对话。调用方必须已经持有会话锁并通过取消代际校验。
+async def _execute_submission(session_id: str, content: str, submission: Submission) -> Message | None:
+    """执行一条已受理的运行。调用方必须已经持有会话锁并通过取消代际校验。
 
     Args:
         session_id: 会话ID。
         content: 用户输入消息内容。
-        user_message_id: 重试场景下复用已有的用户消息ID。
-        attempt: 同一条输入消息的第几次尝试。
-        request_id: 幂等键。
+        submission: 受理产出的运行上下文。
     """
     # 清除上一次遗留的取消状态
     cancel_event = get_cancel_event(session_id)
     cancel_event.clear()
     _active_runs.add(session_id)  # 将本会话加入运行队列
-    logger.info("开始执行会话轮次: user_message_id=%s", user_message_id or " - ")
+    run_id = submission.run_id
+    user_message_id = submission.input_message_id
+    logger.info("开始执行会话轮次: run_id=%s, user_message_id=%s", run_id, user_message_id or " - ")
 
-    run_id: str | None = None
     outcome: RunStatus | None = None
     run_error_code: str | None = None
     output_message_id: str | None = None
 
     try:
-        # 受理本次提交
-        submission = await submit_run(
-            session_id, content, request_id=request_id, user_message_id=user_message_id, attempt=attempt
-        )
-        # 如果此请求此前已受理, 则原样返回上次的结果
-        if submission.replayed:
-            return await _replay_submission(submission.run_id)
-        run_id = submission.run_id
-        user_message_id = submission.input_message_id
-        logger.info("运行已登记: run_id=%s, attempt=%d", run_id, attempt)
-
         # 发布开始事件
         await event_bus.publish(
             AgentEvent(event_type=EventType.AGENT_STARTED, session_id=session_id, data=AgentStartResponse())
@@ -318,13 +299,16 @@ async def run_agent_session(
     generation = get_cancel_generation(session_id)  # 记录下本轮的代际
     register_pending_run(session_id)
     try:
+        submission = await submit_run(session_id, content, request_id=request_id, user_message_id=user_message_id)
+        # 此前已受理过请求，原样返回上次的请求
+        if submission.replayed:
+            return await _replay_submission(submission.run_id)
         async with get_session_lock(session_id):
             # 如果排队期间被取消，代际不合直接自行取消
             if generation != get_cancel_generation(session_id):
+                await _finalize_run(submission.run_id, RunStatus.CANCELLED)
                 raise RunCancelledError()
-            return await _run_agent_session_locked(
-                session_id, content, user_message_id=user_message_id, request_id=request_id
-            )
+            return await _execute_submission(session_id, content, submission)
     finally:
         unbind_session_id(_log_token)
         unregister_pending_run(session_id)
@@ -571,7 +555,13 @@ async def retry_agent_session(session_id: str, message_id: str, new_content: str
                 await db.commit()
 
             # 重跑消息
-            return await _run_agent_session_locked(session_id, content, user_message_id=message_id, attempt=attempt)
+            submission = await submit_run(
+                session_id, content, kind=SUBMIT_KIND_RETRY, user_message_id=message_id, attempt=attempt
+            )
+            # 请求重放
+            if submission.replayed:
+                return await _replay_submission(submission.run_id)
+            return await _execute_submission(session_id, content, submission)
     finally:
         unbind_session_id(_log_token)
         unregister_pending_run(session_id)

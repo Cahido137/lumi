@@ -158,6 +158,10 @@ async def submit_run(
                 message="该会话存在未完成的审批",
                 code=SessionErrorCode.PENDING_APPROVAL_EXISTS,
             )
+        # 会话已有活动运行中，不受理新的提交
+        active = await runs_crud.get_active_run(db, session_id)
+        if active is not None:
+            raise ConflictError(message="该会话存在正在运行的对话", code=SessionErrorCode.RUN_IN_PROGRESS)
         input_message_id = user_message_id
         # 代表是新的消息输入, 落库并创建config
         if input_message_id is None:
