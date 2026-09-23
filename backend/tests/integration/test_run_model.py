@@ -148,6 +148,20 @@ async def test_session_id_and_thread_id_are_required():
         await db.rollback()
 
 
+async def test_output_message_set_null_when_message_deleted():
+    """删除产出消息时运行记录保留, 外键置空"""
+    session_id, message_id = await create_session_with_message("run_output_fk")
+    run_id = await create_run(
+        session_id, thread_id="thread-out", status=RunStatus.SUCCEEDED.value, output_message_id=message_id
+    )
+    async with SessionLocal() as db:
+        await db.execute(text("DELETE FROM messages WHERE id = :mid"), {"mid": message_id})
+        await db.commit()
+    run = await load_run(run_id)
+    assert run is not None
+    assert run.output_message_id is None
+
+
 async def test_foreign_key_delete_rules():
     """删除行为在数据库侧就是 SET NULL 与 CASCADE, 不只依赖 ORM 声明"""
     async with SessionLocal() as db:
@@ -238,6 +252,20 @@ async def test_terminal_run_frees_the_session_slot(status: RunStatus):
     assert (await load_run(second)).status == RunStatus.PENDING
 
 
+async def test_request_id_index_only_constrains_non_null_keys():
+    """幂等键唯一索引只约束非空键: 同键冲突, 空键可以并存"""
+    first_session, _ = await create_session_with_message("run_req_a")
+    second_session, _ = await create_session_with_message("run_req_b")
+    await create_run(first_session, thread_id="thread-req-a", request_id="req-shared")
+    with pytest.raises(IntegrityError) as exc:
+        await create_run(second_session, thread_id="thread-req-b", request_id="req-shared")
+    assert "uq_runs_request_id" in str(exc.value)
+
+    third_session, _ = await create_session_with_message("run_req_c")
+    await create_run(second_session, thread_id="thread-req-null-a")
+    await create_run(third_session, thread_id="thread-req-null-b")  # 两条空键运行可以并存
+
+
 async def test_thread_id_is_unique_across_runs():
     """一个 thread_id 只属于一条运行, 跨会话也不允许复用"""
     first_session, _ = await create_session_with_message("run_thread_a")
@@ -310,6 +338,15 @@ async def test_indexes_exist_in_database():
     names = set(rows.scalars().all())
     assert {"ix_runs_session_id", "ix_runs_input_message_id", "uq_runs_thread_id"} <= names
     assert "ix_runs_thread_id" not in names
+
+
+async def test_request_id_index_is_partial_and_unique():
+    """幂等键索引在库里是带谓词的唯一索引, 不是普通索引"""
+    async with SessionLocal() as db:
+        rows = await db.execute(text("SELECT indexdef FROM pg_indexes WHERE indexname = 'uq_runs_request_id'"))
+        definition = rows.scalar_one()
+    assert definition.startswith("CREATE UNIQUE INDEX")
+    assert "WHERE (request_id IS NOT NULL)" in definition
 
 
 async def test_admission_constraints_exist_in_database():

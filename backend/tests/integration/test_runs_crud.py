@@ -147,6 +147,17 @@ async def test_list_runs_for_session_orders_newest_first_and_pages():
     assert [item.id for item in second_page] == [ids[0]]
 
 
+async def test_get_run_by_request_id():
+    """按幂等键取回运行, 不存在的键返回 None"""
+    session_id = await create_session("crud_request_id")
+    run_id = await new_run(session_id, thread_id="thread-key", request_id="req-1", request_fingerprint="f" * 64)
+    async with SessionLocal() as db:
+        found = await runs_crud.get_run_by_request_id(db, "req-1")
+        missing = await runs_crud.get_run_by_request_id(db, "req-missing")
+    assert found.id == run_id
+    assert missing is None
+
+
 # ---------- 状态推进 ----------
 
 
@@ -224,6 +235,20 @@ async def test_mark_run_succeeded_sets_finished_at():
     assert run.finished_at is not None
     assert run.finished_at >= run.started_at
     assert run.error_code is None
+
+
+async def test_mark_run_succeeded_records_output_message():
+    """成功收尾时一并记下产出消息, 供同键重放原样返回"""
+    session_id = await create_session("crud_output")
+    message_id = await create_message(session_id, "回答")
+    run_id = await new_run(session_id, thread_id="thread-output")
+    await force_status(run_id, RunStatus.RUNNING)
+    async with SessionLocal() as db:
+        assert await runs_crud.mark_run_succeeded(db, run_id, output_message_id=message_id) is True
+        await db.commit()
+    run = await load(run_id)
+    assert run.status == RunStatus.SUCCEEDED.value
+    assert run.output_message_id == message_id
 
 
 async def test_mark_run_failed_records_stable_error_code():

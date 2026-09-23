@@ -12,6 +12,7 @@ from app.crud import users as users_crud
 from app.db.models import Approval, Message, Run
 from app.db.session import SessionLocal
 from app.schemas.enums import ApprovalStatus, MessageRole, RunStatus
+from app.schemas.error_code import SessionErrorCode
 from app.utils.errors import ConflictError
 from langchain_core.messages import AIMessage
 from sqlalchemy import select
@@ -281,8 +282,9 @@ async def test_pending_approval_blocks_new_run_without_creating_row(monkeypatch)
     await start_approval_run(monkeypatch, sid)
     assert len(await get_runs(sid)) == 1
     patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="不会用到")]))
-    with pytest.raises(ValueError):
+    with pytest.raises(ConflictError) as exc:
         await run_agent_session(sid, "新对话")
+    assert exc.value.error_code == SessionErrorCode.PENDING_APPROVAL_EXISTS
     runs = await get_runs(sid)
     assert len(runs) == 1
     assert runs[0].status == RunStatus.WAITING_APPROVAL
