@@ -69,23 +69,29 @@ async def get_approval_by_execution_id(db: AsyncSession, tool_execution_id: str)
 
 async def update_approval(
     db: AsyncSession, approval_id: str, status: ApprovalStatus | str, scope: ApprovalScope | str
-) -> None:
-    """更新审批单信息。
+) -> bool:
+    """记录一次审批决定。
 
     Args:
         approval_id: 审批单ID。
         status: 审批状态 ApprovalStatus 枚举类型或其字符串字面量。
         scope: 审批授权范围 ApprovalScope 枚举类型或其字符串字面量。
+
+    Returns:
+        bool: 写入成功返回 True, 审批单不存在或已经被决定返回 False。
     """
     status_value = status.value if isinstance(status, ApprovalStatus) else status
     scope_value = scope.value if isinstance(scope, ApprovalScope) else scope
     stmt = (
         update(Approval)
-        .where(Approval.id == approval_id)
+        .where(Approval.id == approval_id, Approval.status == ApprovalStatus.PENDING.value)
         .values(status=status_value, scope=scope_value, decided_at=text("clock_timestamp()"))
+        .returning(Approval.id)
     )
-    await db.execute(stmt)
+    result = await db.execute(stmt)
+    decided = result.scalar_one_or_none() is not None
     await db.flush()
+    return decided
 
 
 async def get_session_grants(db: AsyncSession, session_id: str) -> Grants:

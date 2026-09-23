@@ -49,7 +49,7 @@ from app.schemas.enums import (
 )
 from app.schemas.error_code import CommonErrorCode, SessionErrorCode
 from app.schemas.todos import TodoItem, TodoStatus
-from app.utils.errors import ConflictError, Error
+from app.utils.errors import ConflictError, Error, NotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +141,49 @@ async def _replay_submission(run_id: str) -> Message | None:
     if status in (RunStatus.PENDING, RunStatus.RUNNING):
         raise ConflictError(message="同一请求正在运行中", code=SessionErrorCode.RUN_IN_PROGRESS)
     raise ConflictError(message="请求对应的运行已结束, 没有可重放的回复")
+
+
+async def _replay_decision(
+    approval_id: str, thread_id: str, decision: ApprovalStatus, scope: ApprovalScope
+) -> str | None:
+    """按数据库已有审批决定收敛一次重复的恢复请求。
+
+    Args:
+        approval_id: 审批单ID。
+        thread_id: 审批单对应的检查点线程ID。
+        decision: 本次请求的审批决定。
+        scope: 本次请求的授权范围。
+
+    Returns:
+        第一次恢复产出的回复文本, 如果又进入审批返回 None。
+
+    Raises:
+        NotFoundError: 审批单不存在。
+        ConflictError: 审批单已失效、审批单已审批、运行没有可重放结果。
+        RunCancelledError: 运行被打断。
+    """
+    async with SessionLocal() as db:
+        approval = await approvals_crud.get_approval_by_id(db, approval_id)
+        if approval is None:
+            raise NotFoundError(message="审批单不存在")
+        # 失效的审批单
+        if approval.status == ApprovalStatus.CANCELLED.value:
+            raise ConflictError(message="审批单已失效")
+        run = await runs_crud.get_run_by_thread_id(db, thread_id)  # 按线程ID获得运行记录
+        if run is None:
+            raise ConflictError(message="运行记录不存在")
+        # 决定是 pending 说明失败发生在领取执行权阶段
+        if approval.status == ApprovalStatus.PENDING.value:
+            # 审批正在处理中
+            if RunStatus(run.status) in (RunStatus.PENDING, RunStatus.RUNNING):
+                raise ConflictError(message="审批正在处理中", code=SessionErrorCode.RUN_IN_PROGRESS)
+            raise ConflictError(message="运行状态不合法", detail={"status": run.status})
+        # 同决定同授权才重放结果
+        if approval.status != decision.value or approval.scope != scope.value:
+            raise ConflictError(message="审批决定与已有决定冲突")
+        run_id = run.id
+    reply = await _replay_submission(run_id)  # 获取已受理的运行结果
+    return None if reply is None else reply.content
 
 
 async def _execute_submission(session_id: str, content: str, submission: Submission) -> Message | None:
@@ -314,6 +357,51 @@ async def run_agent_session(
         unregister_pending_run(session_id)
 
 
+async def _decide_and_claim(
+    approval_id: str, thread_id: str, decision: ApprovalStatus, scope: ApprovalScope
+) -> str | None:
+    """在一个短事务里记录审批决定并领取对应的执行权。
+
+    Args:
+        approval_id: 审批单ID。
+        thread_id: 审批单对应的检查点线程ID。
+        decision: 审批决定。
+        scope: 审批授权范围。
+
+    Returns:
+        领取到的运行记录ID, 审批单已被决定或此运行无法流转时返回 None。
+
+    Raises:
+        NotFoundError: 审批单不存在。
+        ConflictError: 审批单对应的运行记录不存在。
+    """
+    async with SessionLocal() as db:
+        # 二次校验, 防止审批单已被处理
+        approval = await approvals_crud.get_approval_by_id(db, approval_id)
+        if approval is None:
+            raise NotFoundError(message="审批单不存在")
+        if approval.status != ApprovalStatus.PENDING.value:
+            return None
+
+        # 领取运行执行权
+        existing = await runs_crud.get_run_by_thread_id(db, thread_id)
+        if existing is None:
+            logger.warning("审批恢复找不到对应的运行记录: thread_id=%s", thread_id)
+            raise ConflictError(message="审批恢复找不到对应的运行记录")
+        # 运行无法流转
+        if not await runs_crud.mark_run_started(db, existing.id):
+            logger.warning("运行状态未能流转至 running: run_id=%s", existing.id)
+            await db.rollback()
+            return None
+        if not await approvals_crud.update_approval(db, approval_id, decision, scope):
+            logger.warning("审批决定被并发请求抢先: approval_id=%s", approval_id)
+            await db.rollback()
+            return None
+        await db.commit()
+        logger.info("审批决定: approval_id=%s, decision=%s, scope=%s", approval_id, decision.value, scope.value)
+        return existing.id
+
+
 async def resume_agent_session(
     approval_id: str, decision: ApprovalStatus, scope: ApprovalScope = ApprovalScope.ONE_TIME
 ) -> str | None:
@@ -325,13 +413,18 @@ async def resume_agent_session(
         scope: 审批授权范围。
 
     Returns:
-        如果成功运行结束, 返回模型最后的回答。
+        如果成功运行结束, 返回模型最后的回答。恢复后再次等待审批返回 None。
+
+    Raises:
+        NotFoundError: 审批单不存在。
+        ConflictError: 审批单已作出决定, 或运行无法恢复。
+        RunCancelledError: 恢复执行被打断。
     """
     # 先取出审批单拿到会话ID, 用于获取会话锁
     async with SessionLocal() as db:
         approval = await approvals_crud.get_approval_by_id(db, approval_id)  # 拿到审批单
         if approval is None:
-            raise ValueError("审批单不存在")
+            raise NotFoundError(message="审批单不存在")
         session_id = approval.session_id
         thread_id = approval.thread_id
 
@@ -342,44 +435,23 @@ async def resume_agent_session(
         async with get_session_lock(session_id):
             if generation != get_cancel_generation(session_id):
                 raise RunCancelledError()
+
+            # 拿不到决定资格时按数据库既有事实
+            run_id = await _decide_and_claim(approval_id, thread_id, decision, scope)
+            if run_id is None:
+                return await _replay_decision(approval_id, thread_id, decision, scope)
+
             # 清除遗留的取消状态
             cancel_event = get_cancel_event(session_id)
             cancel_event.clear()
             _active_runs.add(session_id)
 
-            run_id: str | None = None
             outcome: RunStatus | None = None
             run_error_code: str | None = None
             output_message_id: str | None = None
 
             try:
                 async with SessionLocal() as db:
-                    # 加锁期间二次校验, 防止等待期间审批单已被处理
-                    approval = await approvals_crud.get_approval_by_id(db, approval_id)
-                    if approval is None:
-                        raise ValueError("审批单不存在")
-                    if approval.status != ApprovalStatus.PENDING.value:
-                        raise ValueError("审批单已处理")
-
-                    # 领取运行的执行权
-                    existing = await runs_crud.get_run_by_thread_id(db, thread_id)
-                    # 运行不存在
-                    if existing is None:
-                        logger.warning("审批恢复找不到对应的运行记录: thread_id=%s", thread_id)
-                        raise ConflictError(message="审批恢复对应的运行记录不存在")
-                    # 运行无法流转
-                    if not await runs_crud.mark_run_started(db, existing.id):
-                        logger.warning("运行状态未能流转至 running: run_id=%s", existing.id)
-                        raise ConflictError(message="运行状态不允许流转至 running, 恢复图运行失败")
-                    run_id = existing.id
-
-                    # 领取成功后记录审批决定
-                    await approvals_crud.update_approval(db, approval_id, decision, scope)
-                    await db.commit()
-                    logger.info(
-                        "审批决定: approval_id=%s, decision=%s, scope=%s", approval_id, decision.value, scope.value
-                    )
-
                     # 发布审批结束事件
                     await event_bus.publish(
                         AgentEvent(

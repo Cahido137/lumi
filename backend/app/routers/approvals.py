@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, get_owned_approval_or_404
@@ -34,15 +34,13 @@ async def decide_approval(
     Raises:
         HTTPException 401: 未登录或令牌无效。
         HTTPException 404: 审批单不存在或不属于当前用户。
-        HTTPException 400: 审批单已被处理, 或非法的状态值。
+        ConflictError: 审批单已作出其他决定, 或无法恢复。
     """
     await get_owned_approval_or_404(db, str(approval_id), current_user)
     try:
         reply = await resume_agent_session(str(approval_id), ApprovalStatus(request.status), request.scope)
     except RunCancelledError as e:
         return success_response(message=e.message, data=None)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
 
     # 再次遇到中断
     if reply is None:
