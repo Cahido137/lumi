@@ -11,13 +11,16 @@ from app.core.session_runner import (
 )
 from app.core.session_runner.context import StreamResult
 from app.core.session_runner.state import CANCEL_MESSAGE, RunCancelledError, request_cancel_session
+from app.crud import runs as runs_crud
 from app.crud import sessions as sessions_crud
 from app.crud import todos as todos_crud
 from app.crud import users as users_crud
-from app.db.models import Approval, Message, ToolExecution
+from app.db.models import Approval, Message, Run, ToolExecution
 from app.db.session import SessionLocal
 from app.schemas.enums import ApprovalStatus, ExecutionStatus, MessageRole
+from app.schemas.error_code import SessionErrorCode
 from app.schemas.todos import TodoItem, TodoStatus
+from app.utils.errors import ConflictError
 from langchain_core.messages import AIMessage
 from sqlalchemy import select
 from tests.fakes import FakePlanner, FakeTool, ScriptedModel, SlowModel
@@ -60,6 +63,25 @@ async def get_executions(session_id):
     async with SessionLocal() as db:
         result = await db.execute(select(ToolExecution).where(ToolExecution.session_id == session_id))
         return list(result.scalars())
+
+
+async def get_runs(session_id):
+    """取会话全部运行记录, 按登记时间正序"""
+    async with SessionLocal() as db:
+        result = await db.execute(select(Run).where(Run.session_id == session_id).order_by(Run.created_at, Run.id))
+        return list(result.scalars())
+
+
+async def wait_for_active_run(session_id, timeout=5.0):
+    """有界轮询等待会话出现活动运行, 代替固定 sleep 编排顺序"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        async with SessionLocal() as db:
+            if await runs_crud.get_active_run(db, session_id) is not None:
+                return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{timeout}s 内没有出现活动运行")
 
 
 async def get_pending_approval_id(session_id):
@@ -190,21 +212,23 @@ async def test_cancel_run_compensates(monkeypatch):
         assert await sessions_crud.get_has_pending_task(db, sid) is True
 
 
-async def test_cancel_queued_run_aborts(monkeypatch):
-    """场景6b: 回归-排队中的任务被取消后放弃执行, 不顶替前一轮"""
+async def test_busy_session_rejects_second_submit(monkeypatch):
+    """场景6b: 会话在运行时第二条提交立即冲突, 不排队也不留下输入与运行记录"""
     patch_agent_deps(monkeypatch, SlowModel(seconds=30))
     sid = await create_user_and_session()
     task1 = asyncio.create_task(run_agent_session(sid, "第一个"))
-    await asyncio.sleep(0.2)
-    task2 = asyncio.create_task(run_agent_session(sid, "第二个"))  # 排队等锁
-    await asyncio.sleep(0.2)
+    await wait_for_active_run(sid)
+
+    with pytest.raises(ConflictError) as exc:
+        await run_agent_session(sid, "第二个")
+
+    assert exc.value.error_code == SessionErrorCode.RUN_IN_PROGRESS
     request_cancel_session(sid)
     with pytest.raises(RunCancelledError):
         await task1
-    with pytest.raises(RunCancelledError):
-        await task2
     msgs = await list_messages(sid)
     assert [m.content for m in msgs if m.role == MessageRole.USER.value] == ["第一个"]
+    assert len(await get_runs(sid)) == 1
 
 
 async def test_retry_cleans_and_reruns(monkeypatch):

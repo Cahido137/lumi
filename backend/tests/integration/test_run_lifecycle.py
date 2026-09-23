@@ -15,7 +15,7 @@ from app.schemas.enums import ApprovalStatus, MessageRole, RunStatus
 from app.schemas.error_code import SessionErrorCode
 from app.utils.errors import ConflictError
 from langchain_core.messages import AIMessage
-from sqlalchemy import select
+from sqlalchemy import func, select
 from tests.fakes import FakePlanner, FakeTool, ScriptedModel, SlowModel
 
 
@@ -72,6 +72,17 @@ async def get_approval(session_id) -> Approval | None:
     """取会话的审批单"""
     async with SessionLocal() as db:
         return await db.scalar(select(Approval).where(Approval.session_id == session_id))
+
+
+async def count_user_messages(session_id) -> int:
+    """统计会话里的用户消息条数"""
+    async with SessionLocal() as db:
+        stmt = (
+            select(func.count())
+            .select_from(Message)
+            .where(Message.session_id == session_id, Message.role == MessageRole.USER.value)
+        )
+        return int((await db.execute(stmt)).scalar_one())
 
 
 async def first_user_message_id(session_id) -> str:
@@ -273,7 +284,7 @@ async def test_finalize_failure_does_not_mask_original_error(monkeypatch):
     assert (await get_runs(sid))[0].status == RunStatus.RUNNING
 
 
-# ---------- 不产生运行记录的路径 ----------
+# ---------- 不跑图的路径 ----------
 
 
 async def test_pending_approval_blocks_new_run_without_creating_row(monkeypatch):
@@ -290,15 +301,20 @@ async def test_pending_approval_blocks_new_run_without_creating_row(monkeypatch)
     assert runs[0].status == RunStatus.WAITING_APPROVAL
 
 
-async def test_generation_mismatch_leaves_no_run_row(monkeypatch):
-    """排队期间被取消: 这一轮从未开始, 不留下运行记录"""
+async def test_generation_mismatch_cancels_accepted_run(monkeypatch):
+    """受理之后被取消: 这一轮不跑图, 已受理的运行收尾为打断, 输入保留"""
     patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="不会用到")]))
     sid = await create_user_and_session("life_gen")
     generations = iter([1, 2])
     monkeypatch.setattr(runner, "get_cancel_generation", lambda session_id: next(generations))
     with pytest.raises(RunCancelledError):
         await run_agent_session(sid, "你好")
-    assert await get_runs(sid) == []
+    runs = await get_runs(sid)
+    assert len(runs) == 1
+    assert runs[0].status == RunStatus.CANCELLED
+    assert runs[0].finished_at is not None
+    assert runs[0].error_code is None
+    assert await count_user_messages(sid) == 1
 
 
 # ---------- 重试 ----------

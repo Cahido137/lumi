@@ -8,7 +8,7 @@ from app.core.graph import builder
 from app.core.session_runner import resume_agent_session, runner
 from app.core.session_runner.runner import run_agent_session
 from app.core.session_runner.state import RunCancelledError
-from app.core.session_runner.submission import submit_run
+from app.core.session_runner.submission import Submission, submit_run
 from app.crud import approvals as approvals_crud
 from app.crud import runs as runs_crud
 from app.crud import sessions as sessions_crud
@@ -147,6 +147,26 @@ async def test_concurrent_submit_with_same_request_id_creates_one_run():
 
     assert first.run_id == second.run_id
     assert sorted([first.replayed, second.replayed]) == [False, True]
+    assert len(await get_runs(sid)) == 1
+    assert await count_messages(sid, MessageRole.USER) == 1
+
+
+async def test_concurrent_submit_to_same_session_accepts_only_one():
+    """T03: 同会话两个不同请求同时提交, 只受理一个, 另一个拿到活动运行冲突"""
+    sid = await create_user_and_session("submit_t03")
+    barrier = asyncio.Barrier(2)
+
+    async def submit(content, key):
+        await barrier.wait()  # 两个提交同时冲向数据库, 不靠 sleep 编排顺序
+        return await submit_run(sid, content, request_id=key)
+
+    results = await asyncio.gather(submit("问题一", "req-t03-a"), submit("问题二", "req-t03-b"), return_exceptions=True)
+    accepted = [item for item in results if isinstance(item, Submission)]
+    rejected = [item for item in results if isinstance(item, ConflictError)]
+
+    assert len(accepted) == 1
+    assert len(rejected) == 1
+    assert rejected[0].error_code == SessionErrorCode.RUN_IN_PROGRESS
     assert len(await get_runs(sid)) == 1
     assert await count_messages(sid, MessageRole.USER) == 1
 
