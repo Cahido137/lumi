@@ -6,6 +6,7 @@ Note:
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from app.crud import approvals as approvals_crud
@@ -13,7 +14,7 @@ from app.crud import messages as messages_crud
 from app.crud import sessions as sessions_crud
 from app.crud import tool_executions as tool_executions_crud
 from app.crud import users as users_crud
-from app.db.models import Run
+from app.db.models import Approval, Run
 from app.db.session import SessionLocal
 from app.schemas.enums import MessageRole, RunStatus
 from sqlalchemy import text
@@ -218,11 +219,12 @@ async def test_status_check_constraint_rejects_unknown_value():
 async def test_approval_status_check_constraint_rejects_unknown_value():
     """审批状态同样受 CHECK 限制, 不能靠写入非法取值来撤销一张已决定的审批"""
     session_id, _ = await create_session_with_message("run_appr_check")
+    run_id = await create_run(session_id, thread_id="thread-check")
     async with SessionLocal() as db:
         execution = await tool_executions_crud.create_pending_execution(
             db, session_id, "run_shell", {"command": "ls"}, "call-check"
         )
-        approval = await approvals_crud.create_approval(db, session_id, "thread-check", execution.id)
+        approval = await approvals_crud.create_approval(db, session_id, run_id, "thread-check", execution.id)
         approval.status = "revoked"
         with pytest.raises(IntegrityError) as exc:
             await db.commit()
@@ -314,18 +316,87 @@ async def test_thread_id_joins_with_approvals():
     """runs.thread_id 与 approvals.thread_id 同型同值, 可以直接 join"""
     session_id, _ = await create_session_with_message("run_join")
     thread_id = "thread-join-1"
-    await create_run(session_id, thread_id=thread_id, status=RunStatus.WAITING_APPROVAL.value)
+    run_id = await create_run(session_id, thread_id=thread_id, status=RunStatus.WAITING_APPROVAL.value)
     async with SessionLocal() as db:
         execution = await tool_executions_crud.create_pending_execution(
             db, session_id, "run_shell", {"command": "ls"}, "call-1"
         )
-        await approvals_crud.create_approval(db, session_id, thread_id, execution.id)
+        await approvals_crud.create_approval(db, session_id, run_id, thread_id, execution.id)
         await db.commit()
         rows = await db.execute(
             text("SELECT r.id, a.id FROM runs r JOIN approvals a ON a.thread_id = r.thread_id WHERE r.thread_id = :t"),
             {"t": thread_id},
         )
     assert len(rows.all()) == 1
+
+
+async def test_approval_requires_an_owning_run():
+    """审批必须挂在一条运行上: 缺 run_id 或指向不存在的运行都被数据库拒绝"""
+    session_id, _ = await create_session_with_message("run_appr_owner")
+    run_id = await create_run(session_id, thread_id="thread-owner")
+    async with SessionLocal() as db:
+        execution = await tool_executions_crud.create_pending_execution(
+            db, session_id, "run_shell", {"command": "ls"}, "call-owner"
+        )
+        await db.commit()
+        execution_id = execution.id
+
+    # 缺 run_id
+    async with SessionLocal() as db:
+        db.add(
+            Approval(
+                session_id=session_id,
+                thread_id="thread-owner",
+                tool_execution_id=execution_id,
+                status="pending",
+                scope="one_time",
+            )
+        )
+        with pytest.raises(IntegrityError) as exc:
+            await db.commit()
+        await db.rollback()
+    assert "run_id" in str(exc.value)
+
+    # run_id 指向不存在的运行
+    async with SessionLocal() as db:
+        db.add(
+            Approval(
+                session_id=session_id,
+                run_id=str(uuid4()),
+                thread_id="thread-owner",
+                tool_execution_id=execution_id,
+                status="pending",
+                scope="one_time",
+            )
+        )
+        with pytest.raises(IntegrityError) as exc:
+            await db.commit()
+        await db.rollback()
+    assert "approvals_run_id_fkey" in str(exc.value)
+
+    # 归属明确时可以写入
+    async with SessionLocal() as db:
+        approval = await approvals_crud.create_approval(db, session_id, run_id, "thread-owner", execution_id)
+        await db.commit()
+    assert approval.run_id == run_id
+
+
+async def test_approval_is_removed_with_its_run():
+    """删除运行时名下审批级联删除, 归属关系不留悬空行"""
+    session_id, _ = await create_session_with_message("run_appr_cascade")
+    run_id = await create_run(session_id, thread_id="thread-cascade")
+    async with SessionLocal() as db:
+        execution = await tool_executions_crud.create_pending_execution(
+            db, session_id, "run_shell", {"command": "ls"}, "call-cascade"
+        )
+        await approvals_crud.create_approval(db, session_id, run_id, "thread-cascade", execution.id)
+        await db.commit()
+    async with SessionLocal() as db:
+        await db.delete(await db.get(Run, run_id))
+        await db.commit()
+    async with SessionLocal() as db:
+        rows = await db.execute(text("SELECT count(*) FROM approvals WHERE thread_id = 'thread-cascade'"))
+    assert rows.scalar_one() == 0
 
 
 # ---------- 迁移与模型的一致性 ----------
@@ -385,3 +456,32 @@ async def test_column_comments_match_model():
             )
         )
     assert dict(rows.all()) == expected
+
+
+async def test_approval_run_id_schema_matches_model():
+    """run_id 的 NOT NULL、索引、级联外键与列注释真实存在于库中"""
+    async with SessionLocal() as db:
+        nullable = await db.execute(
+            text(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_name = 'approvals' AND column_name = 'run_id'"
+            )
+        )
+        indexes = await db.execute(text("SELECT indexname FROM pg_indexes WHERE tablename = 'approvals'"))
+        fkeys = await db.execute(
+            text(
+                "SELECT conname, confdeltype::text FROM pg_constraint "
+                "WHERE conrelid = 'approvals'::regclass AND contype = 'f'"
+            )
+        )
+        comments = await db.execute(
+            text(
+                "SELECT a.attname, col_description(a.attrelid, a.attnum) FROM pg_attribute a "
+                "WHERE a.attrelid = 'approvals'::regclass AND a.attnum > 0 AND NOT a.attisdropped"
+            )
+        )
+    assert nullable.scalar_one() == "NO"
+    assert "ix_approvals_run_id" in set(indexes.scalars().all())
+    assert dict(fkeys.all())["approvals_run_id_fkey"] == "c"  # c 表示级联删除
+    expected = {column.name: column.comment for column in Approval.__table__.columns}
+    assert dict(comments.all()) == expected

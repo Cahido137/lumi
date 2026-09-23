@@ -79,14 +79,17 @@ async def force_status(run_id, status: RunStatus) -> None:
 
 
 async def make_pending_approval(session_id, thread_id="thread-approval") -> str:
-    """直接造一条待决审批, 返回审批单ID"""
+    """造一条等待审批的运行与它名下的待决审批, 返回审批单ID"""
     async with SessionLocal() as db:
+        run = await runs_crud.create_run(db, session_id, thread_id)
+        run_id = run.id
         execution = await tool_executions_crud.create_pending_execution(
             db, session_id, "run_shell", {"command": "ls"}, "call-1"
         )
-        approval = await approvals_crud.create_approval(db, session_id, thread_id, execution.id)
+        approval = await approvals_crud.create_approval(db, session_id, run_id, thread_id, execution.id)
         await db.commit()
-        return approval.id
+    await force_status(run_id, RunStatus.WAITING_APPROVAL)
+    return approval.id
 
 
 async def get_pending_approval_id(session_id) -> str:
@@ -201,7 +204,7 @@ async def test_same_content_with_different_request_id_is_a_new_run():
 
 
 async def test_pending_approval_blocks_submit_with_stable_error_code():
-    """存在待决审批时提交被拒, 用稳定错误码, 且不留下运行记录与输入"""
+    """存在待决审批时提交被拒, 用稳定错误码, 不新增运行记录与输入"""
     sid = await create_user_and_session("submit_blocked")
     await make_pending_approval(sid)
 
@@ -209,7 +212,9 @@ async def test_pending_approval_blocks_submit_with_stable_error_code():
         await submit_run(sid, "新对话", request_id="req-blocked")
 
     assert exc.value.error_code == SessionErrorCode.PENDING_APPROVAL_EXISTS
-    assert await get_runs(sid) == []
+    runs = await get_runs(sid)
+    assert len(runs) == 1  # 只有前置条件里那条等待审批的运行
+    assert runs[0].status == RunStatus.WAITING_APPROVAL
     assert await count_messages(sid, MessageRole.USER) == 0
 
 

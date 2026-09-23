@@ -74,6 +74,15 @@ async def get_approval(session_id) -> Approval:
     return approval
 
 
+async def get_approvals(session_id) -> list[Approval]:
+    """取会话全部审批单, 按创建时间正序"""
+    async with SessionLocal() as db:
+        result = await db.execute(
+            select(Approval).where(Approval.session_id == session_id).order_by(Approval.created_at, Approval.id)
+        )
+        return list(result.scalars())
+
+
 async def count_messages(session_id, role, content=None) -> int:
     """统计会话里指定角色的消息条数, 给定 content 时只统计正文相同的"""
     async with SessionLocal() as db:
@@ -196,3 +205,44 @@ async def test_claim_failure_does_not_execute_or_decide(monkeypatch):
     assert after.status == ApprovalStatus.PENDING.value
     assert after.decided_at is None
     assert (await get_runs(sid))[0].status == RunStatus.FAILED
+
+
+async def test_approval_records_owning_run(monkeypatch):
+    """审批中断产生的审批单带上所属运行ID, 与 thread_id 指向同一条运行"""
+    sid = await create_user_and_session("appr_owner")
+    await start_approval_run(monkeypatch, sid, FakeTool("run_shell", result="目录列表"))
+    run = (await get_runs(sid))[0]
+    approval = await get_approval(sid)
+    assert approval.run_id == run.id
+    assert approval.thread_id == run.thread_id
+
+
+async def test_second_approval_after_resume_shares_same_run(monkeypatch):
+    """恢复后再次中断产生的新审批仍归属同一条运行, 不新建运行"""
+    sid = await create_user_and_session("appr_twice")
+    tool = FakeTool("run_shell", result="目录列表")
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel(
+            [
+                AIMessage(content="", tool_calls=[tool_call("run_shell", {"command": "dir"}, "c1")]),
+                AIMessage(content="", tool_calls=[tool_call("run_shell", {"command": "pwd"}, "c2")]),
+                AIMessage(content="两次都执行完了"),
+            ]
+        ),
+        tools={"run_shell": tool},
+    )
+    assert await run_agent_session(sid, "列两次目录") is None
+    run_id = (await get_runs(sid))[0].id
+    first = (await get_approvals(sid))[0]
+    assert first.run_id == run_id
+
+    # 批准第一次后再次中断, 返回 None 表示又停在等待审批
+    assert await resume_agent_session(first.id, ApprovalStatus.APPROVED) is None
+    approvals = await get_approvals(sid)
+    assert len(approvals) == 2
+    assert len(await get_runs(sid)) == 1
+    assert approvals[1].id != first.id
+    assert approvals[1].run_id == run_id
+    assert approvals[1].thread_id == first.thread_id
+    assert tool.calls == [{"command": "dir"}]
