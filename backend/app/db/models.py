@@ -250,6 +250,12 @@ class Run(Base):
             postgresql_where=text("status IN ('pending', 'running', 'waiting_approval')"),
         ),
         Index("uq_runs_thread_id", "thread_id", unique=True),
+        Index(
+            "uq_runs_request_id",
+            "request_id",
+            unique=True,
+            postgresql_where=text("request_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="运行唯一标识ID")
@@ -264,6 +270,18 @@ class Run(Base):
     )
     input_message_id: Mapped[str | None] = mapped_column(
         ForeignKey(Message.id, ondelete="SET NULL"), nullable=True, index=True, comment="触发本轮运行的用户消息ID"
+    )
+    output_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey(Message.id, ondelete="SET NULL", name="runs_output_message_id_fkey"),
+        nullable=True,
+        index=True,
+        comment="运行成功后产生的AIMessage的ID",
+    )
+    request_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="客户端提交的幂等键, 用于幂等性检查"
+    )
+    request_fingerprint: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="提交请求的载荷摘要, 用于识别同幂等键但是不同内容"
     )
     attempt: Mapped[int] = mapped_column(Integer, default=1, comment="同一条输入消息的第几次尝试, 从1开始")
     error_code: Mapped[str | None] = mapped_column(String(50), nullable=True, comment="失败时的稳定错误码")

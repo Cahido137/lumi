@@ -31,6 +31,28 @@ async def _send_loop(websocket: WebSocket, queue: asyncio.Queue) -> None:
         await websocket.send_json(event.model_dump(mode="json", by_alias=True))
 
 
+MAX_REQUEST_ID_LENGTH = 64
+"""幂等键的最大长度。"""
+
+
+def _clean_request_id(raw: object) -> str | None:
+    """从 WebSocket 载荷中清洗出幂等键。
+
+    Args:
+        raw: 载荷中 request_id 字段的原始值。
+
+    Returns:
+        清洗出的合法幂等键, 非法的幂等键或者没有传返回 None。
+    """
+    if raw is None:
+        return None
+    request_id = raw.strip() if isinstance(raw, str) else ""
+    if not request_id or len(request_id) > MAX_REQUEST_ID_LENGTH:
+        logger.warning("非法的幂等键, 已忽略")
+        return None
+    return request_id
+
+
 @router.websocket("/{session_id}")
 async def websocket_chat(websocket: WebSocket, session_id: UUID):
     """建立指定会话的 WebSocket 事件流。
@@ -92,7 +114,8 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
             content = str(data.get("content") or "").strip()  # 清洗数据
             if not content:
                 continue
-            run_task = asyncio.create_task(run_agent_session(sid, content))
+            request_id = _clean_request_id(data.get("requestId"))  # 清洗出幂等键
+            run_task = asyncio.create_task(run_agent_session(sid, content, request_id=request_id))
             tasks.add(run_task)
             run_task.add_done_callback(_on_run_done)
     except WebSocketDisconnect:

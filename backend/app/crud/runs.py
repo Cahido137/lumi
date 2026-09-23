@@ -33,6 +33,8 @@ async def create_run(
     *,
     input_message_id: str | None = None,
     attempt: int = 1,
+    request_id: str | None = None,
+    request_fingerprint: str | None = None,
 ) -> Run:
     """登记一次新的运行。
 
@@ -51,6 +53,8 @@ async def create_run(
         status=RunStatus.PENDING.value,
         input_message_id=input_message_id,
         attempt=attempt,
+        request_id=request_id,
+        request_fingerprint=request_fingerprint,
     )
     db.add(run)
     await db.flush()
@@ -81,6 +85,20 @@ async def get_run_by_thread_id(db: AsyncSession, thread_id: str) -> Run | None:
     stmt = select(Run).where(Run.thread_id == thread_id).order_by(Run.created_at.desc()).limit(1)
     result = await db.execute(stmt)
     return result.scalars().first()
+
+
+async def get_run_by_request_id(db: AsyncSession, request_id: str) -> Run | None:
+    """按幂等键查询运行记录。
+
+    Args:
+        request_id: 幂等键。
+
+    Returns:
+        返回指定的 Run 对象, 不存在返回 None。
+    """
+    stmt = select(Run).where(Run.request_id == request_id)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
 async def get_active_run(db: AsyncSession, session_id: str) -> Run | None:
@@ -179,7 +197,7 @@ async def mark_run_waiting_approval(db: AsyncSession, run_id: str) -> bool:
     return await _advance(db, run_id, RunStatus.WAITING_APPROVAL)
 
 
-async def mark_run_succeeded(db: AsyncSession, run_id: str) -> bool:
+async def mark_run_succeeded(db: AsyncSession, run_id: str, *, output_message_id: str | None = None) -> bool:
     """把运行推进到 succeeded。
 
     Args:
@@ -189,7 +207,14 @@ async def mark_run_succeeded(db: AsyncSession, run_id: str) -> bool:
         bool: 是否成功流转。
     """
     # 成功运行清空错误码
-    return await _advance(db, run_id, RunStatus.SUCCEEDED, error_code=None, finished_at=text("clock_timestamp()"))
+    return await _advance(
+        db,
+        run_id,
+        RunStatus.SUCCEEDED,
+        error_code=None,
+        finished_at=text("clock_timestamp()"),
+        output_message_id=output_message_id,
+    )
 
 
 async def mark_run_failed(db: AsyncSession, run_id: str, *, error_code: str) -> bool:

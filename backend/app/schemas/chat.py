@@ -13,6 +13,9 @@ class ChatRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=8000, description="用户输入")
     """用户输入。长度限定为 1-8000 字符。"""
 
+    request_id: str | None = Field(None, alias="requestId", min_length=1, max_length=64, description="提交幂等键")
+    """提交幂等键, 为空时表示本次提交不参与幂等判断。"""
+
 
 class ChatResponse(BaseModel):
     """对话请求返回的响应体。

@@ -45,19 +45,16 @@ async def chat(
     Raises:
         HTTPException 401: 未登录或令牌无效。
         HTTPException 404: 会话不存在或不属于当前用户。
-        HTTPException 409: 该会话存在未完成的审批, 应该先处理审批。
+        ConflictError: 该会话存在未完成的审批或已有活动运行, 或同一幂等键提交了不同的载荷内容。
     """
     # 校验会话ID是否存在
     await get_owned_session_or_404(db, str(session_id), current_user)
 
     # 运行一轮 Agent
     try:
-        ai_message = await run_agent_session(str(session_id), request.content)
+        ai_message = await run_agent_session(str(session_id), request.content, request_id=request.request_id)
     except RunCancelledError as e:
         return success_response(message=e.message, data=None)
-    except ValueError as e:
-        # 捕获会话运行器中的审批前置检查异常: 会话存在未完成审批时禁止开始新一轮对话
-        raise HTTPException(status_code=409, detail=str(e)) from e
 
     # 如果没有返回，说明此处中断了
     if ai_message is None:

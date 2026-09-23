@@ -111,10 +111,21 @@ async def rebuild_history(db: AsyncSession, session_id: str, exclude_id: str | N
     return to_langchain_messages(rows)
 
 
+def context_for_thread(thread_id: str) -> RunContext:
+    """按已有的线程ID还原运行config。
+
+    Args:
+        thread_id: 已有线程ID。
+
+    Returns:
+        RunContext: 绑定了该线程ID的运行上下文。
+    """
+    return RunContext(config={"configurable": {"thread_id": thread_id}}, thread_id=thread_id)
+
+
 def build_config(session_id: str) -> RunContext:
     """生成运行config与thread_id"""
-    thread_id = f"{session_id}:{uuid4()}"  # 格式为会话ID+一个uuid
-    return RunContext(config={"configurable": {"thread_id": thread_id}}, thread_id=thread_id)
+    return context_for_thread(f"{session_id}:{uuid4()}")  # 格式为会话ID+一个uuid
 
 
 async def load_plan_queue(db: AsyncSession, session_id: str) -> PlanQueue:
