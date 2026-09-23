@@ -200,8 +200,8 @@ async def test_resume_failure_marks_run_failed_and_keeps_approval(monkeypatch):
     # 批准是不可回退事实: 决定已提交, 不会退回 pending
     assert (await get_approval(sid)).status == ApprovalStatus.APPROVED.value
 
-    # 同一张审批单不能再次决定, 且被拒绝时不会改动已终态的运行
-    with pytest.raises(ValueError, match="审批单已处理"):
+    # 同决定重发不再进入执行, 已失败的运行没有可重放的回复
+    with pytest.raises(ConflictError, match="没有可重放的回复"):
         await resume_agent_session(approval_id, ApprovalStatus.APPROVED)
     assert (await get_runs(sid))[0].status == RunStatus.FAILED
 

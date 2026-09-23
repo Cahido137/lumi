@@ -10,6 +10,7 @@ from app.db.models import Approval, Run
 from app.db.session import SessionLocal
 from app.main import app
 from app.schemas.enums import ApprovalStatus, RunStatus
+from app.utils.errors import ConflictError
 from langchain_core.messages import AIMessage
 from sqlalchemy import select
 from tests.fakes import FakePlanner, FakeTool, ScriptedModel, SlowModel
@@ -133,8 +134,8 @@ async def test_cancel_waiting_approval_terminates_run_and_invalidates_approval(c
     assert after.status == ApprovalStatus.CANCELLED.value
     assert after.decided_at is None
 
-    # 事后再批准不得启动执行: 空脚本模型若被调用会抛 IndexError, 而不是这里的 ValueError
+    # 事后再批准不得启动执行: 空脚本模型若被调用会抛 IndexError, 而不是这里的冲突
     patch_agent_deps(monkeypatch, ScriptedModel([]))
-    with pytest.raises(ValueError, match="审批单已处理"):
+    with pytest.raises(ConflictError, match="审批单已失效"):
         await resume_agent_session(approval.id, ApprovalStatus.APPROVED)
     assert (await get_runs(sid))[0].status == RunStatus.CANCELLED
