@@ -10,13 +10,14 @@ from app.core.session_runner.runner import run_agent_session
 from app.core.session_runner.state import RunCancelledError
 from app.core.session_runner.submission import Submission, submit_run
 from app.crud import approvals as approvals_crud
+from app.crud import run_commands as run_commands_crud
 from app.crud import runs as runs_crud
 from app.crud import sessions as sessions_crud
 from app.crud import tool_executions as tool_executions_crud
 from app.crud import users as users_crud
 from app.db.models import Approval, Message, Run
 from app.db.session import SessionLocal
-from app.schemas.enums import ApprovalStatus, MessageRole, RunStatus
+from app.schemas.enums import ApprovalStatus, MessageRole, RunCommandKind, RunCommandStatus, RunStatus
 from app.schemas.error_code import CommonErrorCode, SessionErrorCode
 from app.utils.errors import ConflictError
 from langchain_core.messages import AIMessage
@@ -103,7 +104,7 @@ async def get_pending_approval_id(session_id) -> str:
 
 
 async def test_submit_records_input_and_run_together():
-    """受理一次提交: 输入消息与运行记录一起落库, 运行随即取得执行权"""
+    """受理一次提交: 输入、运行记录与初始命令一起落库, 运行留在排队等领取"""
     sid = await create_user_and_session("submit_basic")
     submission = await submit_run(sid, "第一个问题", request_id="req-basic")
 
@@ -111,13 +112,19 @@ async def test_submit_records_input_and_run_together():
     async with SessionLocal() as db:
         run = await runs_crud.get_run_by_id(db, submission.run_id)
         message = await db.get(Message, submission.input_message_id)
-    assert run.status == RunStatus.RUNNING.value
-    assert run.started_at is not None
+        command = await run_commands_crud.get_command_by_id(db, submission.command_id)
+    # 执行权由消费者领取, 受理本身不推进运行
+    assert run.status == RunStatus.PENDING.value
+    assert run.started_at is None
     assert run.input_message_id == message.id
     assert run.request_id == "req-basic"
     assert len(run.request_fingerprint) == 64
     assert message.role == MessageRole.USER.value
     assert message.content == "第一个问题"
+    assert command is not None
+    assert command.run_id == run.id
+    assert command.kind == RunCommandKind.START.value
+    assert command.status == RunCommandStatus.PENDING.value
 
 
 async def test_submit_without_request_id_skips_idempotency():

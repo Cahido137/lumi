@@ -4,14 +4,24 @@ import asyncio
 
 import pytest
 from app.core.graph import builder
-from app.core.session_runner import resume_agent_session, run_agent_session
+from app.core.session_runner import resume_agent_session, run_agent_session, runner
+from app.core.session_runner.consumer import claim_execution
 from app.crud import approvals as approvals_crud
+from app.crud import run_commands as run_commands_crud
 from app.crud import runs as runs_crud
 from app.crud import sessions as sessions_crud
 from app.crud import users as users_crud
-from app.db.models import Approval, Message, Run
+from app.db.models import Approval, Message, Run, RunCommand
 from app.db.session import SessionLocal
-from app.schemas.enums import ApprovalScope, ApprovalStatus, MessageRole, RunStatus
+from app.schemas.enums import (
+    ApprovalScope,
+    ApprovalStatus,
+    EventType,
+    MessageRole,
+    RunCommandKind,
+    RunCommandStatus,
+    RunStatus,
+)
 from app.utils.errors import ConflictError
 from langchain_core.messages import AIMessage
 from sqlalchemy import func, select
@@ -81,6 +91,28 @@ async def get_approvals(session_id) -> list[Approval]:
             select(Approval).where(Approval.session_id == session_id).order_by(Approval.created_at, Approval.id)
         )
         return list(result.scalars())
+
+
+async def get_run(run_id) -> Run:
+    """取一条运行记录"""
+    async with SessionLocal() as db:
+        run = await db.get(Run, run_id)
+    assert run is not None
+    return run
+
+
+async def get_command(command_id) -> RunCommand:
+    """取一条运行命令"""
+    async with SessionLocal() as db:
+        command = await db.get(RunCommand, command_id)
+    assert command is not None
+    return command
+
+
+async def get_commands(run_id) -> list[RunCommand]:
+    """取一条运行名下的全部命令, 按登记时间正序"""
+    async with SessionLocal() as db:
+        return await run_commands_crud.list_commands(db, run_id)
 
 
 async def count_messages(session_id, role, content=None) -> int:
@@ -246,3 +278,81 @@ async def test_second_approval_after_resume_shares_same_run(monkeypatch):
     assert approvals[1].run_id == run_id
     assert approvals[1].thread_id == first.thread_id
     assert tool.calls == [{"command": "dir"}]
+
+
+async def test_concurrent_resume_creates_single_command(monkeypatch):
+    """T04: 两路同时批准只产生一条恢复命令, 两条命令都随运行结果收尾"""
+    sid = await create_user_and_session("appr_cmd")
+    tool = FakeTool("run_shell", result="目录列表")
+    await start_approval_run(monkeypatch, sid, tool)
+    approval_id = (await get_approval(sid)).id
+    barrier = asyncio.Barrier(2)
+
+    async def resume() -> str | None:
+        """屏障对齐后各恢复一次"""
+        await barrier.wait()
+        return await resume_agent_session(approval_id, ApprovalStatus.APPROVED)
+
+    replies = await asyncio.wait_for(asyncio.gather(resume(), resume()), timeout=DECIDE_TIMEOUT)
+    assert replies == ["执行完毕", "执行完毕"]
+    assert tool.calls == [{"command": "dir"}]
+    run = (await get_runs(sid))[0]
+    commands = await get_commands(run.id)
+    # 一条初始命令 + 一条恢复命令, 落败的那一路没有多出命令
+    assert [command.kind for command in commands] == [RunCommandKind.START.value, RunCommandKind.RESUME.value]
+    assert {command.status for command in commands} == {RunCommandStatus.COMPLETED.value}
+    assert commands[1].approval_id == approval_id
+
+
+async def test_resume_command_survives_api_crash_and_stays_claimable(monkeypatch):
+    """T10: 决定事务提交后进程死亡, 恢复命令仍在库里且能被另一个执行方领取"""
+    sid = await create_user_and_session("appr_crash")
+    await start_approval_run(monkeypatch, sid, FakeTool("run_shell", result="目录列表"))
+    approval = await get_approval(sid)
+    run = (await get_runs(sid))[0]
+
+    # 只跑决定事务, 等价于 API 在提交之后、领取执行之前立刻崩溃
+    queued = await runner._decide_and_queue(
+        approval.id, approval.thread_id, ApprovalStatus.APPROVED, ApprovalScope.ONE_TIME
+    )
+    assert queued is not None
+    run_id, command_id = queued
+    assert run_id == run.id
+
+    # 崩溃之后留在库里的事实: 决定已提交、运行排队、命令待领取
+    assert (await get_approval(sid)).status == ApprovalStatus.APPROVED.value
+    assert (await get_run(run_id)).status == RunStatus.PENDING.value
+    command = await get_command(command_id)
+    assert command.kind == RunCommandKind.RESUME.value
+    assert command.status == RunCommandStatus.PENDING.value
+    assert command.approval_id == approval.id
+
+    # 另一个执行方(等价于独立 Worker)仍能领取这条命令
+    assert await claim_execution(run_id, command_id) is True
+    assert (await get_run(run_id)).status == RunStatus.RUNNING.value
+    claimed = await get_command(command_id)
+    assert claimed.status == RunCommandStatus.CLAIMED.value
+    assert claimed.claimed_epoch == 1
+    assert claimed.delivery_attempt == 1
+
+    # 重复领取失败, 不会复制出并行命令
+    assert await claim_execution(run_id, command_id) is False
+    assert (await get_command(command_id)).claimed_epoch == 1
+
+
+async def test_resume_publishes_each_event_once(monkeypatch):
+    """一次成功恢复里审批结束与运行结束事件各只发一次, 不重复推送"""
+    sid = await create_user_and_session("appr_events")
+    await start_approval_run(monkeypatch, sid, FakeTool("run_shell", result="目录列表"))
+    approval_id = (await get_approval(sid)).id
+
+    published = []
+
+    async def collect(event):
+        """只记录事件类型, 不投递给订阅者"""
+        published.append(event.event_type)
+
+    monkeypatch.setattr(runner.event_bus, "publish", collect)
+    assert await resume_agent_session(approval_id, ApprovalStatus.APPROVED) == "执行完毕"
+    assert published.count(EventType.APPROVAL_RESULT) == 1
+    assert published.count(EventType.AGENT_FINISHED) == 1
