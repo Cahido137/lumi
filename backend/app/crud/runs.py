@@ -181,6 +181,18 @@ async def mark_run_started(db: AsyncSession, run_id: str) -> bool:
     return await _advance(db, run_id, RunStatus.RUNNING, started_at=text("COALESCE(started_at, clock_timestamp())"))
 
 
+async def mark_run_queued(db: AsyncSession, run_id: str) -> bool:
+    """把运行退回 pending, 标识恢复命令已经排队等待领取。
+
+    Args:
+        run_id: 运行记录ID。
+
+    Returns:
+        bool: 是否成功流转。
+    """
+    return await _advance(db, run_id, RunStatus.PENDING)
+
+
 async def mark_run_waiting_approval(db: AsyncSession, run_id: str) -> bool:
     """把运行推进到 waiting_approval。
 

@@ -1,4 +1,4 @@
-"""全局枚举定义: 包括事件类型、计划状态、审批状态、授权范围、执行状态、运行状态、消息角色。
+"""全局枚举定义: 包括事件类型、计划状态、审批状态、授权范围、执行状态、运行状态、运行命令、消息角色。
 
 所有枚举类型均继承自StrEnum, 可直接作为字符串进行比较。数据库以字符串形式存储枚举值, 业务逻辑中以枚举常量进行判定。
 """
@@ -219,6 +219,35 @@ class RunStatus(StrEnum):
 
     CANCELLED = "cancelled"
     """运行被用户手动打断。"""
+
+
+class RunCommandKind(StrEnum):
+    """运行命令种类, 表示这条命令要执行哪个阶段。"""
+
+    START = "start"
+    """初次执行本运行。"""
+
+    RESUME = "resume"
+    """审批决定后恢复执行本运行。"""
+
+
+class RunCommandStatus(StrEnum):
+    """运行命令状态, 表示这条命令的领取与完成情况。"""
+
+    PENDING = "pending"
+    """命令已登记, 等待执行方领取。"""
+
+    CLAIMED = "claimed"
+    """命令已被领取, 但执行方尚未提交结果。"""
+
+    COMPLETED = "completed"
+    """命令已执行完毕, 或者执行到审批暂停。"""
+
+    CANCELLED = "cancelled"
+    """命令被取消, 不再执行。"""
+
+    FAILED = "failed"
+    """命令执行失败。"""
 
 
 class MessageRole(StrEnum):

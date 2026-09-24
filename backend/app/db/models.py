@@ -308,3 +308,54 @@ class Approval(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), comment="审批创建时间"
     )
+
+
+class RunCommand(Base):
+    """运行命令表, 记录一次可以被领取执行的持久执行意图。
+
+    run_id 作为外键, 关联命令所属的运行, 级联删除。
+    approval_id 作为外键, 关联中断对应审批单, 级联删除。
+    kind 表示命令种类, status 表示命令的领取与完成情况。
+    """
+
+    __tablename__ = "run_commands"
+    __table_args__ = (
+        CheckConstraint("kind IN ('start', 'resume')", name="ck_run_commands_kind"),
+        CheckConstraint(
+            "status IN ('pending', 'claimed', 'completed', 'cancelled', 'failed')",
+            name="ck_run_commands_status",
+        ),
+        Index(
+            "uq_run_commands_one_active",
+            "run_id",
+            unique=True,
+            postgresql_where=text("status IN ('pending', 'claimed')"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="命令唯一标识ID")
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey(Run.id, ondelete="CASCADE", name="run_commands_run_id_fkey"), index=True, comment="所属运行ID"
+    )
+    approval_id: Mapped[str | None] = mapped_column(
+        ForeignKey(Approval.id, ondelete="CASCADE", name="run_commands_approval_id_fkey"),
+        nullable=True,
+        index=True,
+        comment="resume命令对应的审批单ID",
+    )
+    kind: Mapped[str] = mapped_column(String(20), comment="start=初次执行, resume=审批恢复")
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="pending",
+        comment="pending=待领取, claimed=已领取, completed=已完成, cancelled=已取消, failed=已失败",
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, default=1, comment="payload的结构版本, 从1开始")
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True, comment="命令载荷, 不含身份与授权")
+    claimed_epoch: Mapped[int] = mapped_column(Integer, default=0, comment="领取任期计数, 每次成功领取加1")
+    delivery_attempt: Mapped[int] = mapped_column(Integer, default=0, comment="投递尝试计数, 每次成功领取加1")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), comment="命令登记时间"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="状态变更时间"
+    )

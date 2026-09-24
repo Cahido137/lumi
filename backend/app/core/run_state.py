@@ -4,7 +4,7 @@ Note:
     图的运行流转规则由本模块管理, 数据访问层与运行器都必须经过 ensure_transition 校验才能给 Run.status 赋值。
 """
 
-from app.schemas.enums import RunStatus
+from app.schemas.enums import RunCommandStatus, RunStatus
 from app.utils.errors import ConflictError
 
 RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
@@ -12,7 +12,9 @@ RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.RUNNING: frozenset(
         {RunStatus.WAITING_APPROVAL, RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}
     ),
-    RunStatus.WAITING_APPROVAL: frozenset({RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLED}),
+    RunStatus.WAITING_APPROVAL: frozenset(
+        {RunStatus.PENDING, RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLED}
+    ),
     RunStatus.SUCCEEDED: frozenset(),
     RunStatus.FAILED: frozenset(),
     RunStatus.CANCELLED: frozenset(),
@@ -21,6 +23,31 @@ RUN_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
 
 TERMINAL_RUN_STATUSES: frozenset[RunStatus] = frozenset({RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED})
 """终态集合, 此集合内的状态进入后不再发生变化。"""
+
+
+COMMAND_TRANSITIONS: dict[RunCommandStatus, frozenset[RunCommandStatus]] = {
+    RunCommandStatus.PENDING: frozenset({RunCommandStatus.CLAIMED, RunCommandStatus.CANCELLED}),
+    RunCommandStatus.CLAIMED: frozenset(
+        {RunCommandStatus.COMPLETED, RunCommandStatus.FAILED, RunCommandStatus.CANCELLED}
+    ),
+    RunCommandStatus.COMPLETED: frozenset(),
+    RunCommandStatus.CANCELLED: frozenset(),
+    RunCommandStatus.FAILED: frozenset(),
+}
+"""命令合法流转表: 键表示当前状态, 值表示该状态允许进入到状态集合。"""
+
+TERMINAL_COMMAND_STATUSES: frozenset[RunCommandStatus] = frozenset(
+    {RunCommandStatus.COMPLETED, RunCommandStatus.CANCELLED, RunCommandStatus.FAILED}
+)
+"""命令终态集合, 此集合内的状态进入后不再发生变化。"""
+
+COMMAND_STATUS_BY_RUN_OUTCOME: dict[RunStatus, RunCommandStatus] = {
+    RunStatus.SUCCEEDED: RunCommandStatus.COMPLETED,
+    RunStatus.WAITING_APPROVAL: RunCommandStatus.COMPLETED,
+    RunStatus.FAILED: RunCommandStatus.FAILED,
+    RunStatus.CANCELLED: RunCommandStatus.CANCELLED,
+}
+"""运行结果到命令状态的映射。"""
 
 
 def is_terminal(status: RunStatus | str) -> bool:

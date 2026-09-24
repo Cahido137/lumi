@@ -10,6 +10,7 @@ from app.core.run_state import is_terminal
 from app.core.session_runner import RunCancelledError, request_cancel_session, retry_agent_session, run_agent_session
 from app.crud import approvals as approvals_crud
 from app.crud import messages as messages_crud
+from app.crud import run_commands as run_commands_crud
 from app.crud import runs as runs_crud
 from app.db.models import User
 from app.db.session import get_db
@@ -135,9 +136,10 @@ async def cancel_run(
     # 如果此时是等待审批状态
     if active_run.status == RunStatus.WAITING_APPROVAL.value:
         terminated = await runs_crud.mark_run_cancelled(db, active_run.id)
-    # 如果成功流转到取消状态，取消所有还未审批的审批单
+    # 如果成功流转到取消状态，取消所有还未审批的审批单和还未领取的命令
     if terminated:
         await approvals_crud.cancel_pending_approvals(db, active_run.thread_id)
+        await run_commands_crud.cancel_pending_commands(db, active_run.id)
     # 如果没有成功流转，登记打断请求
     if not terminated:
         await runs_crud.request_run_cancel(db, active_run.id)

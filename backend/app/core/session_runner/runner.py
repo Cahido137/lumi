@@ -18,6 +18,8 @@ from app.core.events import AgentEvent
 from app.core.logging_config import bind_session_id, unbind_session_id
 from app.core.plan_queue import PlanQueue
 from app.core.prompts import get_system_messages
+from app.core.run_state import COMMAND_STATUS_BY_RUN_OUTCOME, is_terminal
+from app.core.session_runner.consumer import claim_execution
 from app.core.session_runner.context import StreamResult
 from app.core.session_runner.helpers import context_for_thread, load_plan_queue, rebuild_history
 from app.core.session_runner.state import (
@@ -34,6 +36,7 @@ from app.core.session_runner.stream import process_stream
 from app.core.session_runner.submission import SUBMIT_KIND_RETRY, Submission, submit_run
 from app.crud import approvals as approvals_crud
 from app.crud import messages as messages_crud
+from app.crud import run_commands as run_commands_crud
 from app.crud import runs as runs_crud
 from app.crud import sessions as sessions_crud
 from app.crud import todos as todos_crud
@@ -45,6 +48,7 @@ from app.schemas.enums import (
     ApprovalStatus,
     EventType,
     MessageRole,
+    RunCommandKind,
     RunStatus,
 )
 from app.schemas.error_code import CommonErrorCode, SessionErrorCode
@@ -73,6 +77,7 @@ async def _finalize_run(
     outcome: RunStatus | None,
     error_code: str | None = None,
     output_message_id: str | None = None,
+    command_id: str | None = None,
 ) -> None:
     """按运行结果收尾一条运行记录。
 
@@ -81,6 +86,7 @@ async def _finalize_run(
         outcome: 运行结果状态, 为 None 时表示无需收尾。
         error_code: 失败时的错误码。
         output_message_id: 成功运行后产出的助手消息ID。
+        command_id: 本次执行领取的命令ID, 未领取传入 None。
     """
     # 还没有运行记录或无需收尾
     if run_id is None or outcome is None:
@@ -98,6 +104,12 @@ async def _finalize_run(
                 updated = await runs_crud.mark_run_cancelled(db, run_id)
             elif outcome is RunStatus.WAITING_APPROVAL:
                 updated = await runs_crud.mark_run_waiting_approval(db, run_id)
+
+            if command_id is not None:
+                await run_commands_crud.advance_command(db, command_id, COMMAND_STATUS_BY_RUN_OUTCOME[outcome])
+            # 运行进入终态后清除所有还未完成的命令
+            if is_terminal(outcome):
+                await run_commands_crud.cancel_pending_commands(db, run_id)
             if not updated:
                 current = await runs_crud.get_run_by_id(db, run_id)
                 logger.warning(
@@ -193,6 +205,9 @@ async def _execute_submission(session_id: str, content: str, submission: Submiss
         session_id: 会话ID。
         content: 用户输入消息内容。
         submission: 受理产出的运行上下文。
+
+    Raises:
+        ConflictError: 领取执行权或初始命令失败。
     """
     # 清除上一次遗留的取消状态
     cancel_event = get_cancel_event(session_id)
@@ -200,6 +215,13 @@ async def _execute_submission(session_id: str, content: str, submission: Submiss
     _active_runs.add(session_id)  # 将本会话加入运行队列
     run_id = submission.run_id
     user_message_id = submission.input_message_id
+    command_id = submission.command_id
+
+    # 领取执行权和初始命令
+    if command_id is None or not await claim_execution(run_id, command_id):
+        _active_runs.discard(session_id)  # 移出活跃运行列表
+        logger.warning("提交领取失败, 执行终止: run_id=%s", run_id)
+        raise ConflictError(message="运行状态不允许流转至 running, 执行失败")
     logger.info("开始执行会话轮次: run_id=%s, user_message_id=%s", run_id, user_message_id or " - ")
 
     outcome: RunStatus | None = None
@@ -321,8 +343,8 @@ async def _execute_submission(session_id: str, content: str, submission: Submiss
     finally:
         # 将当前会话清出运行队列
         _active_runs.discard(session_id)
-        # 收尾运行记录
-        await _finalize_run(run_id, outcome, run_error_code, output_message_id)
+        # 收尾运行记录和命令
+        await _finalize_run(run_id, outcome, run_error_code, output_message_id, command_id)
 
 
 async def run_agent_session(
@@ -359,10 +381,10 @@ async def run_agent_session(
         unregister_pending_run(session_id)
 
 
-async def _decide_and_claim(
+async def _decide_and_queue(
     approval_id: str, thread_id: str, decision: ApprovalStatus, scope: ApprovalScope
-) -> str | None:
-    """在一个短事务里记录审批决定并领取对应的执行权。
+) -> tuple[str, str] | None:
+    """在一个短事务里记录审批决定、登记恢复命令并把运行退回排队。
 
     Args:
         approval_id: 审批单ID。
@@ -371,7 +393,7 @@ async def _decide_and_claim(
         scope: 审批授权范围。
 
     Returns:
-        领取到的运行记录ID, 审批单已被决定或此运行无法流转时返回 None。
+        (运行ID, 恢复命令ID), 审批单已被决定或此运行无法流转返回 None。
 
     Raises:
         NotFoundError: 审批单不存在。
@@ -390,18 +412,29 @@ async def _decide_and_claim(
         if existing is None:
             logger.warning("审批恢复找不到对应的运行记录: thread_id=%s", thread_id)
             raise ConflictError(message="审批恢复找不到对应的运行记录")
-        # 运行无法流转
-        if not await runs_crud.mark_run_started(db, existing.id):
-            logger.warning("运行状态未能流转至 running: run_id=%s", existing.id)
+        if not await runs_crud.mark_run_queued(db, existing.id):
+            logger.warning("运行状态未能流转至 pending: run_id=%s", existing.id)
             await db.rollback()
             return None
+        # 创建恢复命令
+        command = await run_commands_crud.create_command(
+            db, existing.id, RunCommandKind.RESUME, approval_id=approval_id
+        )
+        command_id = command.id
+        # 以 pending 为条件记录决定
         if not await approvals_crud.update_approval(db, approval_id, decision, scope):
             logger.warning("审批决定被并发请求抢先: approval_id=%s", approval_id)
             await db.rollback()
             return None
         await db.commit()
-        logger.info("审批决定: approval_id=%s, decision=%s, scope=%s", approval_id, decision.value, scope.value)
-        return existing.id
+        logger.info(
+            "审批决定已排队: approval_id=%s, decision=%s, scope=%s, command_id=%s",
+            approval_id,
+            decision.value,
+            scope.value,
+            command_id,
+        )
+        return existing.id, command_id
 
 
 async def resume_agent_session(
@@ -439,14 +472,30 @@ async def resume_agent_session(
                 raise RunCancelledError()
 
             # 拿不到决定资格时按数据库既有事实
-            run_id = await _decide_and_claim(approval_id, thread_id, decision, scope)
-            if run_id is None:
+            queued = await _decide_and_queue(approval_id, thread_id, decision, scope)
+            if queued is None:
                 return await _replay_decision(approval_id, thread_id, decision, scope)
+            run_id, command_id = queued
+
+            # 发布审批结束事件
+            await event_bus.publish(
+                AgentEvent(
+                    event_type=EventType.APPROVAL_RESULT,
+                    session_id=session_id,
+                    data=ApprovalResultResponse(approval_id=approval_id, status=decision),
+                )
+            )
 
             # 清除遗留的取消状态
             cancel_event = get_cancel_event(session_id)
             cancel_event.clear()
             _active_runs.add(session_id)
+
+            # 领取执行权与恢复命令
+            if not await claim_execution(run_id, command_id):
+                _active_runs.discard(session_id)
+                logger.warning("审批恢复命令领取失败: run_id=%s", run_id)
+                raise ConflictError(message="运行状态不允许流转至 running, 图恢复运行失败")
 
             outcome: RunStatus | None = None
             run_error_code: str | None = None
@@ -454,15 +503,6 @@ async def resume_agent_session(
 
             try:
                 async with SessionLocal() as db:
-                    # 发布审批结束事件
-                    await event_bus.publish(
-                        AgentEvent(
-                            event_type=EventType.APPROVAL_RESULT,
-                            session_id=session_id,
-                            data=ApprovalResultResponse(approval_id=approval.id, status=decision),
-                        )
-                    )
-
                     # 恢复图的执行
                     config = {"configurable": {"thread_id": thread_id}}
                     plan_queue = await load_plan_queue(db, session_id)
@@ -582,7 +622,7 @@ async def resume_agent_session(
                 # 将当前会话清出运行队列
                 _active_runs.discard(session_id)
                 # 收尾当前运行记录
-                await _finalize_run(run_id, outcome, run_error_code, output_message_id)
+                await _finalize_run(run_id, outcome, run_error_code, output_message_id, command_id)
     finally:
         unbind_session_id(_log_token)
         unregister_pending_run(session_id)
@@ -617,6 +657,7 @@ async def retry_agent_session(session_id: str, message_id: str, new_content: str
                         raise ConflictError(message="会话正在运行中, 无法重新运行")
                     if not await runs_crud.mark_run_cancelled(db, active_run.id):
                         raise ConflictError(message="运行状态发生改变, 请重新重试")
+                    await run_commands_crud.cancel_pending_commands(db, active_run.id)
 
                 # 检查消息是否被重新编辑了，重新编辑了才采用新消息，否则沿用旧消息
                 content = new_content if new_content is not None else message.content

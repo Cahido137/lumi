@@ -12,10 +12,11 @@ from sqlalchemy.exc import IntegrityError
 from app.core.session_runner.helpers import build_config
 from app.crud import approvals as approvals_crud
 from app.crud import messages as messages_crud
+from app.crud import run_commands as run_commands_crud
 from app.crud import runs as runs_crud
 from app.db.models import Run
 from app.db.session import SessionLocal
-from app.schemas.enums import MessageRole
+from app.schemas.enums import MessageRole, RunCommandKind
 from app.schemas.error_code import CommonErrorCode, SessionErrorCode
 from app.utils.errors import ConflictError
 
@@ -44,6 +45,9 @@ class Submission:
 
     replayed: bool
     """本次提交是否为幂等重放, 为 True 时表示为此前已受理的同键请求。"""
+
+    command_id: str | None = None
+    """受理时登记的初始执行命令ID, 幂等重放时置为 None。"""
 
 
 def build_fingerprint(kind: str, *, session_id: str, content: str, message_id: str | None = None) -> str:
@@ -168,6 +172,7 @@ async def submit_run(
             message = await messages_crud.add_message(db, session_id, MessageRole.USER, content)
             input_message_id = message.id
         thread_id = build_config(session_id).thread_id
+        command_id: str | None = None
         try:
             # 创建新的运行记录
             run = await runs_crud.create_run(
@@ -179,12 +184,14 @@ async def submit_run(
                 request_id=request_id,
                 request_fingerprint=fingerprint,
             )
-            run_id = run.id
-            # 将运行记录标记为开始运行
-            await runs_crud.mark_run_started(db, run_id)
+            # 创建开始运行命令
+            command = await run_commands_crud.create_command(db, run.id, RunCommandKind.START)
+            command_id = command.id
             await db.commit()
         except IntegrityError as exc:
             await db.rollback()
             return await _resolve_integrity_conflict(exc, session_id, request_id, fingerprint)
     # 返回新运行的受理记录
-    return Submission(run_id=run.id, thread_id=thread_id, input_message_id=input_message_id, replayed=False)
+    return Submission(
+        run_id=run.id, thread_id=thread_id, input_message_id=input_message_id, replayed=False, command_id=command_id
+    )
