@@ -11,12 +11,13 @@ from app.crud import run_commands as run_commands_crud
 from app.crud import runs as runs_crud
 from app.crud import sessions as sessions_crud
 from app.crud import users as users_crud
-from app.db.models import Approval, Message, Run, RunCommand
+from app.db.models import Approval, Message, Run, RunCommand, ToolExecution
 from app.db.session import SessionLocal
 from app.schemas.enums import (
     ApprovalScope,
     ApprovalStatus,
     EventType,
+    ExecutionStatus,
     MessageRole,
     RunCommandKind,
     RunCommandStatus,
@@ -26,6 +27,22 @@ from app.utils.errors import ConflictError
 from langchain_core.messages import AIMessage
 from sqlalchemy import func, select
 from tests.fakes import FakePlanner, FakeTool, ScriptedModel
+
+
+class RaisingAfterScriptModel:
+    """先按脚本返回, 脚本用尽后抛出指定异常的假模型。"""
+
+    def __init__(self, responses, error: Exception) -> None:
+        self.responses = list(responses)
+        self.error = error
+        self.calls = 0
+
+    async def ainvoke(self, messages, **kwargs):
+        self.calls += 1
+        if not self.responses:
+            raise self.error
+        return self.responses.pop(0)
+
 
 DECIDE_TIMEOUT = 10.0
 """并发用例的超时秒数。"""
@@ -113,6 +130,14 @@ async def get_commands(run_id) -> list[RunCommand]:
     """取一条运行名下的全部命令, 按登记时间正序"""
     async with SessionLocal() as db:
         return await run_commands_crud.list_commands(db, run_id)
+
+
+async def get_execution(session_id) -> ToolExecution:
+    """取会话的工具执行记录"""
+    async with SessionLocal() as db:
+        execution = await db.scalar(select(ToolExecution).where(ToolExecution.session_id == session_id))
+    assert execution is not None
+    return execution
 
 
 async def count_messages(session_id, role, content=None) -> int:
@@ -356,3 +381,52 @@ async def test_resume_publishes_each_event_once(monkeypatch):
     assert await resume_agent_session(approval_id, ApprovalStatus.APPROVED) == "执行完毕"
     assert published.count(EventType.APPROVAL_RESULT) == 1
     assert published.count(EventType.AGENT_FINISHED) == 1
+
+
+async def test_model_failure_after_tool_success_keeps_both_facts(monkeypatch):
+    """T15: 工具成功后模型失败, 批准事实与工具成功事实都保留"""
+    sid = await create_user_and_session("appr_t15")
+    tool = FakeTool("run_shell", result="目录列表")
+    # 第一阶段: 模型只发出工具调用, 图停在审批中断, 工具还没执行
+    patch_agent_deps(
+        monkeypatch,
+        ScriptedModel([AIMessage(content="", tool_calls=[tool_call("run_shell", {"command": "dir"}, "c1")])]),
+        tools={"run_shell": tool},
+    )
+    assert await run_agent_session(sid, "列目录") is None
+    approval = await get_approval(sid)
+    run_id = (await get_runs(sid))[0].id
+    assert tool.calls == []
+    assert (await get_execution(sid)).status == ExecutionStatus.PENDING.value
+
+    # 第二阶段: 批准后工具真的执行成功, 随后模型炸掉
+    failing = RaisingAfterScriptModel([], RuntimeError("模型在工具成功后炸了"))
+    patch_agent_deps(monkeypatch, failing, tools={"run_shell": tool})
+    with pytest.raises(RuntimeError, match="模型在工具成功后炸了"):
+        await resume_agent_session(approval.id, ApprovalStatus.APPROVED)
+
+    # 副作用已经发生: 工具确实被调用过, 模型确实被调用过一次
+    assert tool.calls == [{"command": "dir"}]
+    assert failing.calls == 1
+
+    # 运行失败事实明确
+    run = await get_run(run_id)
+    assert run.status == RunStatus.FAILED.value
+    assert run.error_code == "internal_error"
+    assert run.finished_at is not None
+
+    # 批准事实保留: 决定已提交, 不因执行失败回退
+    after = await get_approval(sid)
+    assert after.status == ApprovalStatus.APPROVED.value
+    assert after.decided_at is not None
+
+    # 工具成功事实保留: 状态与输出都不被后续模型失败改写
+    execution = await get_execution(sid)
+    assert execution.status == ExecutionStatus.SUCCESS.value
+    assert execution.tool_output == "目录列表"
+    assert execution.finished_at is not None
+
+    # 初始命令保持 completed, 恢复命令记为 failed, 名下不留未完成命令
+    commands = await get_commands(run_id)
+    assert [c.kind for c in commands] == [RunCommandKind.START.value, RunCommandKind.RESUME.value]
+    assert [c.status for c in commands] == [RunCommandStatus.COMPLETED.value, RunCommandStatus.FAILED.value]
