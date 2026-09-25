@@ -17,7 +17,13 @@ from app.schemas.enums import ExecutionStatus
 
 
 async def create_pending_execution(
-    db: AsyncSession, session_id: str, tool_name: str, tool_input: dict, tool_call_id: str | None = None
+    db: AsyncSession,
+    session_id: str,
+    tool_name: str,
+    tool_input: dict,
+    tool_call_id: str | None = None,
+    *,
+    run_id: str,
 ) -> ToolExecution:
     """创建待审批状态的工具执行记录。
 
@@ -26,12 +32,14 @@ async def create_pending_execution(
         tool_name: 工具名称。
         tool_input: 工具入参字典。
         tool_call_id: 工具标识ID, 可空。
+        run_id: 所属运行ID。
 
     Returns:
         ToolExecution: 成功创建的工具执行记录。
     """
     execution = ToolExecution(
         session_id=session_id,
+        run_id=run_id,
         tool_name=tool_name,
         tool_input=tool_input,
         tool_call_id=tool_call_id,
@@ -71,6 +79,8 @@ async def create_finished_execution(
     tool_input: dict,
     status: ExecutionStatus | str,
     tool_output: str | None = None,
+    *,
+    run_id: str,
 ):
     """一次性记录一条完整的工具执行记录。
 
@@ -81,6 +91,7 @@ async def create_finished_execution(
         tool_input: 工具入参字典。
         status: 工具执行结果状态, 接受 ExecutionStatus 枚举或其字符串字面量。
         tool_output: 工具输出, 可空。
+        run_id: 所属运行ID。
 
     Returns:
         ToolExecution: 经过 flush 的执行记录对象。
@@ -91,6 +102,7 @@ async def create_finished_execution(
     status_value = status.value if isinstance(status, ExecutionStatus) else status
     execution = ToolExecution(
         session_id=session_id,
+        run_id=run_id,
         tool_name=tool_name,
         tool_call_id=tool_call_id,
         tool_input=tool_input or {},

@@ -236,19 +236,36 @@ class Todo(Base):
 class ToolExecution(Base):
     """工具执行表, 记录每一次工具调用的信息。
 
+    run_id 作为外键, 关联本次调用的所属运行, 级联删除。
     tool_call_id 记录发起本次工具调用的工具调用标识。
     needs_approval 用于标记本工具是否需要经过审批。
     status 用于标记工具执行状态。
 
     Note:
         待审批工具会在执行前就创建状态为 pending 的记录。
+        run_id 为空时表示无法归属到运行的历史记录。
     """
 
     __tablename__ = "tool_executions"
+    __table_args__ = (
+        Index(
+            "uq_tool_execution_call",
+            "run_id",
+            "tool_call_id",
+            unique=True,
+            postgresql_where=text("run_id IS NOT NULL AND tool_call_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=gen_uuid, comment="工具唯一标识ID")
     session_id: Mapped[str] = mapped_column(
         ForeignKey(Session.id, ondelete="CASCADE"), index=True, comment="所属会话ID"
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        ForeignKey(Run.id, ondelete="CASCADE", name="tool_executions_run_id_fkey"),
+        nullable=True,
+        index=True,
+        comment="所属运行ID",
     )
     tool_name: Mapped[str] = mapped_column(String(100), comment="工具名称")
     tool_call_id: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="发起该工具调用的tool_call_id")

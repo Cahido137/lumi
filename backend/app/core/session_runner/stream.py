@@ -76,7 +76,14 @@ def _resolve_execution_status(rejected: bool, msg_status: str | None) -> Executi
 
 
 async def process_stream(
-    db, session_id: str, plan_queue: PlanQueue, graph_input, config, cancel_event: asyncio.Event | None = None
+    db,
+    session_id: str,
+    plan_queue: PlanQueue,
+    graph_input,
+    config,
+    cancel_event: asyncio.Event | None = None,
+    *,
+    run_id: str,
 ) -> StreamResult:
     """图运行与事件处理流"""
     # 以流式方式运行图
@@ -268,6 +275,7 @@ async def process_stream(
                             tool_input=tool_inputs.get(tm.tool_call_id, {}),
                             status=status,
                             tool_output=content,
+                            run_id=run_id,
                         )
                         await db.commit()
                     logger.info(

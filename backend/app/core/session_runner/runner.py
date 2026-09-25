@@ -257,6 +257,7 @@ async def _execute_submission(session_id: str, content: str, submission: Submiss
                 graph_input=graph_input,
                 config=run_context.config,
                 cancel_event=cancel_event,
+                run_id=run_id,
             )
 
             # 如果有中断信息则创建审批相关信息并落库，并且发布审批事件到总线
@@ -267,6 +268,7 @@ async def _execute_submission(session_id: str, content: str, submission: Submiss
                     stream_result.interrupt.tool,
                     stream_result.interrupt.tool_input,
                     stream_result.interrupt.tool_call_id,
+                    run_id=run_id,
                 )
                 approval = await approvals_crud.create_approval(
                     db, session_id, run_id, run_context.thread_id, execution.id
@@ -515,6 +517,7 @@ async def resume_agent_session(
                             Command(resume=decision.value, update={"grants": grants.model_dump()}),
                             config,
                             cancel_event,
+                            run_id=run_id,
                         )
                     except RunCancelledError:
                         raise
@@ -542,6 +545,7 @@ async def resume_agent_session(
                             stream_result.interrupt.tool,
                             stream_result.interrupt.tool_input,
                             stream_result.interrupt.tool_call_id,
+                            run_id=run_id,
                         )
                         new_approval = await approvals_crud.create_approval(
                             db, session_id, run_id, thread_id, execution.id
