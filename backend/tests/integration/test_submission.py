@@ -85,7 +85,7 @@ async def make_pending_approval(session_id, thread_id="thread-approval") -> str:
         run = await runs_crud.create_run(db, session_id, thread_id)
         run_id = run.id
         execution = await tool_executions_crud.create_pending_execution(
-            db, session_id, "run_shell", {"command": "ls"}, "call-1"
+            db, session_id, "run_shell", {"command": "ls"}, "call-1", run_id=run_id
         )
         approval = await approvals_crud.create_approval(db, session_id, run_id, thread_id, execution.id)
         await db.commit()

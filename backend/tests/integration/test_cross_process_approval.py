@@ -58,7 +58,7 @@ async def seed_pending_approval(username: str, thread_id: str) -> tuple[str, str
         assert await runs_crud.mark_run_started(db, run.id)
         assert await runs_crud.mark_run_waiting_approval(db, run.id)
         execution = await tool_executions_crud.create_pending_execution(
-            db, session_id, "run_shell", {"command": "ls"}, "call-race"
+            db, session_id, "run_shell", {"command": "ls"}, "call-race", run_id=run.id
         )
         approval = await approvals_crud.create_approval(db, session_id, run.id, thread_id, execution.id)
         await db.commit()

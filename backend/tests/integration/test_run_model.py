@@ -222,7 +222,7 @@ async def test_approval_status_check_constraint_rejects_unknown_value():
     run_id = await create_run(session_id, thread_id="thread-check")
     async with SessionLocal() as db:
         execution = await tool_executions_crud.create_pending_execution(
-            db, session_id, "run_shell", {"command": "ls"}, "call-check"
+            db, session_id, "run_shell", {"command": "ls"}, "call-check", run_id=run_id
         )
         approval = await approvals_crud.create_approval(db, session_id, run_id, "thread-check", execution.id)
         approval.status = "revoked"
@@ -319,7 +319,7 @@ async def test_thread_id_joins_with_approvals():
     run_id = await create_run(session_id, thread_id=thread_id, status=RunStatus.WAITING_APPROVAL.value)
     async with SessionLocal() as db:
         execution = await tool_executions_crud.create_pending_execution(
-            db, session_id, "run_shell", {"command": "ls"}, "call-1"
+            db, session_id, "run_shell", {"command": "ls"}, "call-1", run_id=run_id
         )
         await approvals_crud.create_approval(db, session_id, run_id, thread_id, execution.id)
         await db.commit()
@@ -336,7 +336,7 @@ async def test_approval_requires_an_owning_run():
     run_id = await create_run(session_id, thread_id="thread-owner")
     async with SessionLocal() as db:
         execution = await tool_executions_crud.create_pending_execution(
-            db, session_id, "run_shell", {"command": "ls"}, "call-owner"
+            db, session_id, "run_shell", {"command": "ls"}, "call-owner", run_id=run_id
         )
         await db.commit()
         execution_id = execution.id
@@ -387,7 +387,7 @@ async def test_approval_is_removed_with_its_run():
     run_id = await create_run(session_id, thread_id="thread-cascade")
     async with SessionLocal() as db:
         execution = await tool_executions_crud.create_pending_execution(
-            db, session_id, "run_shell", {"command": "ls"}, "call-cascade"
+            db, session_id, "run_shell", {"command": "ls"}, "call-cascade", run_id=run_id
         )
         await approvals_crud.create_approval(db, session_id, run_id, "thread-cascade", execution.id)
         await db.commit()
