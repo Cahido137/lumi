@@ -8,7 +8,7 @@ import jwt as pyjwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, WebSocketException
 
 from app.core.event_bus import event_bus
-from app.core.session_runner import request_cancel_session, run_agent_session
+from app.core.session_runner import run_agent_session
 from app.crud import sessions as sessions_crud
 from app.crud import users as users_crud
 from app.db.session import SessionLocal
@@ -60,7 +60,8 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
     Note:
         JWT 通过 query 参数 token 传递而不是 Authorization 头。
         连接建立后, 客户端发送的每一条文本消息都会触发一轮 Agent 运行。
-        连接断开后, 会取消该会话正在运行的任务。
+        连接断开后, 只结束本连接的订阅与推送, 不会取消正在运行的 Run。
+        需要取消时应显式调用 REST 取消接口。
 
         关闭码:
             4401: 缺少 token、token 校验失败或用户不存在。
@@ -124,7 +125,6 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID):
         logger.exception("WebSocket处理异常 (session_id=%s)", sid)
         raise WebSocketException(code=1011, reason="服务器内部错误") from e
     finally:
-        request_cancel_session(sid)
+        event_bus.unsubscribe(sid, queue)
         send_task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        event_bus.unsubscribe(sid, queue)
