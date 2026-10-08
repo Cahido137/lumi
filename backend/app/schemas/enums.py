@@ -45,12 +45,22 @@ class EventType(StrEnum):
     """
 
     # 工具调用相关
+    TOOL_REQUESTED = "tool_requested"
+    """模型提出工具调用事件。工具还未开始执行。
+
+    data 载荷字段:
+        tool: 被模型调用的工具名称。
+        tool_input: 本次工具调用的入参字典。
+        tool_call_id: 本次工具调用的唯一标识。
+    """
+
     TOOL_STARTED = "tool_started"
-    """工具开始执行事件。
+    """工具开始执行事件。只在工具真正开始执行时发布。
 
     data 载荷字段:
         tool: 被调用的工具名称。
         tool_input: 本次工具调用的入参字典。
+        tool_call_id: 本次工具调用的唯一标识。
     """
 
     TOOL_FINISHED = "tool_finished"

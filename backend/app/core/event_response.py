@@ -43,11 +43,20 @@ class RunCancelledResponse(BaseEventResponse):
     message_id: str | None = Field(None, description="保留的部分回复消息ID, 没有保留为None")
 
 
+class ToolRequestedResponse(BaseEventResponse):
+    """模型提出工具调用事件的载荷。"""
+
+    tool: str = Field(..., description="工具")
+    tool_input: dict[str, Any] = Field(..., description="工具输入")
+    tool_call_id: str | None = Field(None, description="工具调用标识")
+
+
 class ToolStartedResponse(BaseEventResponse):
     """工具开始执行事件的载荷。"""
 
     tool: str = Field(..., description="工具")
     tool_input: dict[str, Any] = Field(..., description="工具输入")
+    tool_call_id: str | None = Field(None, description="工具调用标识")
 
 
 class ToolFinishedResponse(BaseEventResponse):

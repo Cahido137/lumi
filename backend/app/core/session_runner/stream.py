@@ -12,7 +12,6 @@ from app.core.event_response import (
     ContextWarningResponse,
     TokenResponse,
     ToolFinishedResponse,
-    ToolStartedResponse,
 )
 from app.core.events import AgentEvent
 from app.core.graph.builder import build_agent_graph
@@ -210,19 +209,6 @@ async def process_stream(
                         db, session_id, MessageRole.ASSISTANT, content, tool_calls=normalized_calls, usage=usage
                     )
                     await db.commit()
-
-                    for tool in msg.tool_calls:
-                        # 计划标记工具不发布
-                        if tool["name"] in TODO_MARKER_TOOLS:
-                            continue
-                        # 发布工具开始执行事件
-                        await event_bus.publish(
-                            AgentEvent(
-                                event_type=EventType.TOOL_STARTED,
-                                session_id=session_id,
-                                data=ToolStartedResponse(tool=tool["name"], tool_input=tool["args"] or {}),
-                            )
-                        )
                 else:
                     final_reply = msg.content
 

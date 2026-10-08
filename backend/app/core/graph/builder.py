@@ -13,6 +13,9 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from app.core.event_bus import event_bus
+from app.core.event_response import ToolRequestedResponse, ToolStartedResponse
+from app.core.events import AgentEvent
 from app.core.grants import Grants
 from app.core.graph.compact import compact_node
 from app.core.graph.schemas import ApprovalInterrupt, PlanOutput
@@ -28,7 +31,7 @@ from app.core.prompts import (
 )
 from app.core.tools import TOOLS
 from app.core.tools.todo_tool import TODO_DONE_TOOL, TODO_MARKER_TOOLS
-from app.schemas.enums import ApprovalStatus, TodoStatus
+from app.schemas.enums import ApprovalStatus, EventType, TodoStatus
 from app.schemas.todos import TodoItem
 
 APPROVAL_REQUIRED_TOOLS = ["run_shell", "write_file"]
@@ -156,6 +159,21 @@ async def model_node(state: AgentState) -> StateUpdate:
         plan_context = PLAN_EXECUTION_PROMPT.format_messages(plan_lines="\n".join(plan_lines))
         messages = plan_context + state["messages"]
     response = await _model_with_tools.ainvoke(messages)
+    # 模型提出工具调用时发布请求事件
+    session_id = state.get("session_id")
+    if session_id and response.tool_calls:
+        for tc in response.tool_calls:
+            # 标记工具不发布
+            if tc["name"] in TODO_MARKER_TOOLS:
+                continue
+            # 发布事件
+            await event_bus.publish(
+                AgentEvent(
+                    event_type=EventType.TOOL_REQUESTED,
+                    session_id=session_id,
+                    data=ToolRequestedResponse(tool=tc["name"], tool_input=tc["args"] or {}, tool_call_id=tc["id"]),
+                )
+            )
     return {"messages": [response]}
 
 
@@ -245,6 +263,7 @@ async def exec_node(state: AgentState) -> StateUpdate:
     tool_msgs: list[BaseMessage] = []
     new_executed = []
     todos_update = None  # 标记工具执行成功后同步的 todos 状态
+    session_id = state.get("session_id")  # 获取会话ID
     for tc in msg.tool_calls:
         tc_id = tc["id"]
         tc_name = tc["name"]
@@ -277,6 +296,15 @@ async def exec_node(state: AgentState) -> StateUpdate:
                 new_executed.append(tc_id)
                 continue
         # 已授权或者无需授权的工具
+        # 发布工具开始执行事件
+        if session_id and tc_name not in TODO_MARKER_TOOLS:
+            await event_bus.publish(
+                AgentEvent(
+                    event_type=EventType.TOOL_STARTED,
+                    session_id=session_id,
+                    data=ToolStartedResponse(tool=tc_name, tool_input=tc_input or {}, tool_call_id=tc_id),
+                )
+            )
         try:
             result = await TOOLS_BY_NAME[tc_name].ainvoke(tc_input)
         except Exception as e:
