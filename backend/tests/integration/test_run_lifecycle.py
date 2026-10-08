@@ -45,7 +45,7 @@ def patch_agent_deps(monkeypatch, model, tools=None):
 def patch_history_failure(monkeypatch, error: Exception) -> None:
     """让运行在登记之后、跑图之前失败, 用于确定性地触发失败出口。"""
 
-    async def boom(db, session_id, exclude_id=None):
+    async def boom(db, session_id, exclude_id=None, before_message_id=None):
         raise error
 
     monkeypatch.setattr(runner, "rebuild_history", boom)
@@ -321,7 +321,7 @@ async def test_generation_mismatch_cancels_accepted_run(monkeypatch):
 
 
 async def test_retry_creates_new_run_with_next_attempt(monkeypatch):
-    """重试新建一条 attempt=2 的运行, 旧运行原样保留(审计账本)"""
+    """重试新建一条 attempt=2 的运行, 旧运行原样保留, 编辑内容形成新输入版本"""
     patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="旧回答"), AIMessage(content="新回答")]))
     sid = await create_user_and_session("life_retry")
     first = await run_agent_session(sid, "旧问题")
@@ -335,8 +335,12 @@ async def test_retry_creates_new_run_with_next_attempt(monkeypatch):
         (1, RunStatus.SUCCEEDED),
         (2, RunStatus.SUCCEEDED),
     ]
-    assert runs[0].input_message_id == message_id
-    assert runs[1].input_message_id == message_id
+    assert runs[0].input_message_id == message_id  # 旧运行仍指向原输入
+    assert runs[1].input_message_id != message_id  # 新运行指向编辑后的新消息版本
+    assert runs[1].retry_of_run_id == runs[0].id  # 新运行关联源运行
+    async with SessionLocal() as db:
+        new_input = await db.get(Message, runs[1].input_message_id)
+        assert new_input is not None and new_input.content == "新问题"
 
 
 async def test_retry_while_waiting_approval_terminates_old_run(monkeypatch):
@@ -371,8 +375,10 @@ async def test_retry_while_waiting_approval_terminates_old_run(monkeypatch):
     assert by_attempt[2].status == RunStatus.SUCCEEDED
     assert by_attempt[1].input_message_id == message_id
     assert by_attempt[2].input_message_id == message_id
-    # 待决审批已随既有清理逻辑删除, 不会阻塞新一轮
-    assert await get_approval(sid) is None
+    # 待决审批被失效(cancelled)而非删除, 审计记录保留且不再阻塞新一轮
+    approval = await get_approval(sid)
+    assert approval is not None
+    assert approval.status == ApprovalStatus.CANCELLED.value
 
 
 async def test_retry_while_running_returns_conflict(monkeypatch):

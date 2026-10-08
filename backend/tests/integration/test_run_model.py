@@ -113,7 +113,7 @@ async def test_run_roundtrips_every_column():
 
 
 async def test_input_message_set_null_when_message_deleted():
-    """重试删掉输入消息后运行记录仍在, 只把输入消息ID置空"""
+    """删除输入消息后运行记录仍在, 只把输入消息ID置空(外键 SET NULL)"""
     session_id, message_id = await create_session_with_message("run_set_null")
     run_id = await create_run(session_id, input_message_id=message_id)
     async with SessionLocal() as db:

@@ -188,7 +188,7 @@ async def test_approval_reject_via_http(client, monkeypatch):
 
 
 async def test_retry_via_http(client, monkeypatch):
-    """HTTP重试: 编辑内容后重新回答"""
+    """HTTP重试: 编辑内容后重新回答, 旧消息保留, 新内容形成新消息版本"""
     patch_agent_deps(monkeypatch, ScriptedModel([AIMessage(content="旧回答"), AIMessage(content="新回答")]))
     data = await register_user(client)
     sid = await create_session(client, data)
@@ -203,7 +203,8 @@ async def test_retry_via_http(client, monkeypatch):
     )
     assert res2.json()["data"]["reply"] == "新回答"
     msgs2 = await client.get(f"/api/sessions/{sid}/messages", headers=auth_header(data))
-    assert [m["content"] for m in msgs2.json()["data"]["items"]][::-1] == ["新问题", "新回答"]
+    # 接口倒序返回, 反转为时间正序; 旧消息保留, 新内容作为新的用户消息追加
+    assert [m["content"] for m in msgs2.json()["data"]["items"]][::-1] == ["旧问题", "旧回答", "新问题", "新回答"]
 
 
 async def test_retry_pause_via_http(client, monkeypatch):

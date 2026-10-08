@@ -231,8 +231,8 @@ async def test_busy_session_rejects_second_submit(monkeypatch):
     assert len(await get_runs(sid)) == 1
 
 
-async def test_retry_cleans_and_reruns(monkeypatch):
-    """场景7: 重试清理旧回复与工具记录后重跑, 中间工具消息随链路落库"""
+async def test_retry_preserves_history_and_reruns(monkeypatch):
+    """场景7: 重试保留旧回复与工具记录, 编辑内容形成新消息版本后重跑"""
     tool = FakeTool("web_search", result="结果")
     patch_agent_deps(
         monkeypatch,
@@ -253,15 +253,20 @@ async def test_retry_cleans_and_reruns(monkeypatch):
     user_msg_id = (await list_messages(sid))[0].id
     new_reply = await retry_agent_session(sid, user_msg_id, "新问题")
     assert new_reply.content == "新回答"
+    # 历史保留: 旧尝试的消息一条没删, 编辑内容作为新的用户消息版本追加其后
     assert [(m.role, m.content) for m in await list_messages(sid)] == [
+        (MessageRole.USER.value, "旧问题"),
+        (MessageRole.ASSISTANT.value, ""),
+        (MessageRole.TOOL.value, "结果"),
+        (MessageRole.ASSISTANT.value, "旧回答"),
         (MessageRole.USER.value, "新问题"),
         (MessageRole.ASSISTANT.value, ""),
         (MessageRole.TOOL.value, "结果"),
         (MessageRole.ASSISTANT.value, "新回答"),
     ]
     rows = await get_executions(sid)
-    assert len(rows) == 1  # 旧的执行记录已被清理
-    assert rows[0].tool_input == {"query": "新问题"}
+    assert len(rows) == 2  # 两次尝试的执行记录都保留
+    assert {r.tool_input["query"] for r in rows} == {"旧问题", "新问题"}
 
 
 async def test_pending_task_injects_previous_plan(monkeypatch):
