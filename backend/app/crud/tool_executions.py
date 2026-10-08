@@ -7,9 +7,7 @@ Note:
     本模块的所有写操作均只 flush 不 commit, 事务边界由调用方决定。
 """
 
-from datetime import datetime
-
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ToolExecution
@@ -160,15 +158,3 @@ async def get_pending_execution_by_call_id(
     )
     result = await db.execute(stmt)
     return result.scalars().first()
-
-
-async def delete_execution_after(db: AsyncSession, session_id: str, started_at: datetime) -> None:
-    """删除指定会话中某个时间点之后开始的所有工具执行记录。
-
-    Args:
-        session_id: 所属会话ID。
-        started_at: 指定的时间戳。
-    """
-    stmt = delete(ToolExecution).where(ToolExecution.session_id == session_id, ToolExecution.started_at > started_at)
-    await db.execute(stmt)
-    await db.flush()

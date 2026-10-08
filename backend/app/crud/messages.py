@@ -2,12 +2,12 @@
 
 Note:
     本模块的所有写操作均只 flush 不 commit, 事务边界由调用方决定。
-    增、删、改消息时会刷新所属会话的 updated_at 时间戳。
+    新增消息时会刷新所属会话的 updated_at 时间戳。
 """
 
 from datetime import datetime
 
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import sessions as sessions_crud
@@ -91,6 +91,37 @@ async def list_messages_after(db: AsyncSession, session_id: str, after_message_i
     return list(result.scalars().all())
 
 
+async def list_messages_before(db: AsyncSession, session_id: str, before_message_id: str) -> list[Message]:
+    """查询指定会话的某条消息之前的所有消息, 不含该消息本身。
+
+    Args:
+        session_id: 会话ID。
+        before_message_id: 边界消息ID。
+
+    Returns:
+        边界之前的消息列表, 按时间正序排列。
+
+    Note:
+        边界消息不存在或不属于本会话时, 降级为全量查询。
+    """
+    boundary = await db.get(Message, before_message_id)
+    if boundary is None or boundary.session_id != session_id:
+        return await list_message_asc(db, session_id)
+    stmt = (
+        select(Message)
+        .where(
+            Message.session_id == session_id,
+            or_(
+                Message.created_at < boundary.created_at,
+                and_(Message.created_at == boundary.created_at, Message.id < boundary.id),
+            ),
+        )
+        .order_by(Message.created_at.asc(), Message.id.asc())
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def add_message(
     db: AsyncSession,
     session_id: str,
@@ -148,24 +179,6 @@ async def get_message_by_id(db: AsyncSession, message_id: str) -> Message | None
     return await db.get(Message, message_id)
 
 
-async def update_message_content(db: AsyncSession, message_id: str, content: str) -> None:
-    """改写指定消息的正文内容。
-
-    Args:
-        message_id: 消息ID。
-        content: 新的正文内容。
-
-    Note:
-        指定消息不存在时会静默返回, 不会抛出异常。
-    """
-    stmt = update(Message).where(Message.id == message_id).values(content=content).returning(Message.session_id)
-    result = await db.execute(stmt)
-    sid = result.scalar_one_or_none()
-    if sid is not None:
-        await sessions_crud.touch_session(db, sid)
-    await db.flush()
-
-
 async def has_user_message_after(db: AsyncSession, session_id: str, created_at: datetime) -> bool:
     """检查某个时间点后是否还有用户消息。
 
@@ -185,19 +198,6 @@ async def has_user_message_after(db: AsyncSession, session_id: str, created_at: 
     )
     result = await db.execute(stmt)
     return result.first() is not None
-
-
-async def delete_messages_after(db: AsyncSession, session_id: str, created_at: datetime) -> None:
-    """删除指定会话中某个时间点之后的所有消息。
-
-    Args:
-        session_id: 会话ID。
-        created_at: 指定消息的创建时间戳。
-    """
-    stmt = delete(Message).where(Message.session_id == session_id, Message.created_at > created_at)
-    await db.execute(stmt)
-    await sessions_crud.touch_session(db, session_id)
-    await db.flush()
 
 
 async def filter_existing_ids(db: AsyncSession, session_id: str, message_ids: list[str]) -> list[str]:

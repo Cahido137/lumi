@@ -93,19 +93,34 @@ def to_langchain_messages(rows: Sequence[Message]) -> list[BaseMessage]:
     return _sanitize_dangling_tool_calls(messages)
 
 
-async def rebuild_history(db: AsyncSession, session_id: str, exclude_id: str | None = None) -> list[BaseMessage]:
-    """从数据库重建本次图运行的历史消息"""
-    summary_text, until_id = await sessions_crud.get_context_summary(db, session_id)
-    if summary_text and until_id:
-        boundary = await messages_crud.get_message_by_id(db, until_id)  # 获取压缩边界消息
-        if boundary is not None and boundary.session_id == session_id:
-            rows = await messages_crud.list_messages_after(db, session_id, until_id)
-            if exclude_id is not None:
-                rows = [row for row in rows if row.id != exclude_id]
-            return [HumanMessage(content=summary_text, id=until_id)] + to_langchain_messages(rows)
-        await sessions_crud.set_context_summary(db, session_id, None, None)
-        await db.commit()
-    rows = await messages_crud.list_message_asc(db, session_id)
+async def rebuild_history(
+    db: AsyncSession, session_id: str, exclude_id: str | None = None, before_message_id: str | None = None
+) -> list[BaseMessage]:
+    """从数据库重建本次图运行的历史消息。
+
+    Args:
+        exclude_id: 本轮输入消息ID, 历史中排除该消息(输入由调用方单独拼接)。
+        before_message_id: 重试场景下传入被重试的消息ID。该消息及之后的消息
+            属于上一次尝试, 不能进入新一轮上下文, 按此边界截断。
+
+    Note:
+        重试路径在调用方已经重置会话摘要, 因此本函数在 before_message_id
+        存在时不再走摘要分支, 直接截取边界之前的原始消息。
+    """
+    if before_message_id is not None:
+        rows = await messages_crud.list_messages_before(db, session_id, before_message_id)
+    else:
+        summary_text, until_id = await sessions_crud.get_context_summary(db, session_id)
+        if summary_text and until_id:
+            boundary = await messages_crud.get_message_by_id(db, until_id)  # 获取压缩边界消息
+            if boundary is not None and boundary.session_id == session_id:
+                rows = await messages_crud.list_messages_after(db, session_id, until_id)
+                if exclude_id is not None:
+                    rows = [row for row in rows if row.id != exclude_id]
+                return [HumanMessage(content=summary_text, id=until_id)] + to_langchain_messages(rows)
+            await sessions_crud.set_context_summary(db, session_id, None, None)
+            await db.commit()
+        rows = await messages_crud.list_message_asc(db, session_id)
     if exclude_id is not None:
         rows = [row for row in rows if row.id != exclude_id]
     return to_langchain_messages(rows)

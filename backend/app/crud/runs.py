@@ -35,6 +35,7 @@ async def create_run(
     attempt: int = 1,
     request_id: str | None = None,
     request_fingerprint: str | None = None,
+    retry_of_run_id: str | None = None,
 ) -> Run:
     """登记一次新的运行。
 
@@ -43,6 +44,9 @@ async def create_run(
         thread_id: 本轮运行使用的 LangGraph 线程ID。
         input_message_id: 触发本轮运行的用户消息ID。
         attempt: 同一条消息的第几次尝试, 默认值为 1。
+        request_id: 幂等键。
+        request_fingerprint: 提交请求的载荷摘要。
+        retry_of_run_id: 用户主动重试时关联的源运行ID, 首次执行为空。
 
     Returns:
         Run: 成功创建的状态为 pending 的运行记录对象。
@@ -55,6 +59,7 @@ async def create_run(
         attempt=attempt,
         request_id=request_id,
         request_fingerprint=request_fingerprint,
+        retry_of_run_id=retry_of_run_id,
     )
     db.add(run)
     await db.flush()
@@ -295,3 +300,23 @@ async def next_attempt(db: AsyncSession, session_id: str, input_message_id: str)
     )
     result = await db.execute(stmt)
     return int(result.scalar_one()) + 1
+
+
+async def list_runs_by_input(db: AsyncSession, session_id: str, input_message_id: str) -> list[Run]:
+    """按输入消息查询指定会话的重试链运行记录, 按登记时间正序返回。
+
+    Args:
+        session_id: 所属会话ID。
+        input_message_id: 触发运行的用户消息ID。
+
+    Returns:
+        list[Run]: 该输入消息触发过的全部运行记录, 时间正序; 最后一条即最近一次尝试。
+        该消息从未运行过时返回空列表。
+    """
+    stmt = (
+        select(Run)
+        .where(Run.session_id == session_id, Run.input_message_id == input_message_id)
+        .order_by(Run.created_at.asc(), Run.id.asc())
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())

@@ -179,7 +179,8 @@ async def retry_message(
         HTTPException 404: 会话或消息不存在、消息非用户消息、此消息后已有新对话。
 
     Note:
-        重试会删除该消息之后的全部消息、审批单与工具执行记录, 并清空会话摘要。
+        重试保留全部历史消息、审批单与工具执行记录; 编辑后的输入形成新的消息版本,
+        旧运行仍可通过 input_message_id 追溯其原始输入; 会话摘要会被清空。
     """
     await get_owned_session_or_404(db, str(session_id), current_user)
     try:

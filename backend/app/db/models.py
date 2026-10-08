@@ -177,6 +177,12 @@ class Run(Base):
         index=True,
         comment="运行成功后产生的AIMessage的ID",
     )
+    retry_of_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="SET NULL", name="runs_retry_of_run_id_fkey"),
+        nullable=True,
+        index=True,
+        comment="用户主动重试时关联的源运行ID, 首次执行为空",
+    )
     request_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, comment="客户端提交的幂等键, 用于幂等性检查"
     )

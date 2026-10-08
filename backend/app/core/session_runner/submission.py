@@ -49,6 +49,12 @@ class Submission:
     command_id: str | None = None
     """受理时登记的初始执行命令ID, 幂等重放时置为 None。"""
 
+    kind: str = SUBMIT_KIND_CHAT
+    """本次提交的种类。"""
+
+    history_before_message_id: str | None = None
+    """重试场景下被重试的消息ID, 历史重建以它为截断边界; 普通提交为 None。"""
+
 
 def build_fingerprint(kind: str, *, session_id: str, content: str, message_id: str | None = None) -> str:
     """计算提交载荷的摘要 (64 字节)。
@@ -123,6 +129,8 @@ async def submit_run(
     kind: str = SUBMIT_KIND_CHAT,
     user_message_id: str | None = None,
     attempt: int = 1,
+    retry_of_run_id: str | None = None,
+    history_before_message_id: str | None = None,
 ) -> Submission:
     """受理一次运行提交。
 
@@ -133,6 +141,8 @@ async def submit_run(
         kind: 提交种类。
         user_message_id: 重试时的复用已有用户消息的ID, 不是重试场景为 None。
         attempt: 同一条消息的第几次尝试。
+        retry_of_run_id: 用户主动重试时关联的源运行ID, 非重试场景为 None。
+        history_before_message_id: 重试时被重试的消息ID, 作为历史重建的截断边界。
 
     Returns:
         Submission: 受理结果。
@@ -183,6 +193,7 @@ async def submit_run(
                 attempt=attempt,
                 request_id=request_id,
                 request_fingerprint=fingerprint,
+                retry_of_run_id=retry_of_run_id,
             )
             # 创建开始运行命令
             command = await run_commands_crud.create_command(db, run.id, RunCommandKind.START)
@@ -193,5 +204,11 @@ async def submit_run(
             return await _resolve_integrity_conflict(exc, session_id, request_id, fingerprint)
     # 返回新运行的受理记录
     return Submission(
-        run_id=run.id, thread_id=thread_id, input_message_id=input_message_id, replayed=False, command_id=command_id
+        run_id=run.id,
+        thread_id=thread_id,
+        input_message_id=input_message_id,
+        replayed=False,
+        command_id=command_id,
+        kind=kind,
+        history_before_message_id=history_before_message_id,
     )

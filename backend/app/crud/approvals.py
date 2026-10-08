@@ -4,9 +4,7 @@ Note:
     本模块的所有写操作均只 flush 不 commit, 事务边界由调用方决定。
 """
 
-from datetime import datetime
-
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.grants import Grants, extract_grant_key
@@ -173,18 +171,3 @@ async def cancel_pending_approvals(db: AsyncSession, thread_id: str) -> int:
     count = len(result.scalars().all())
     await db.flush()
     return count
-
-
-async def delete_approval_after(db: AsyncSession, session_id: str, created_at: datetime) -> None:
-    """删除指定会话中某个时间点之后创建的所有审批单。
-
-    Args:
-        session_id: 会话ID。
-        created_at: 指定的时间戳。
-
-    Note:
-        本函数是按审批单创建时间是否在指定时间戳之后判断是否需要删除。
-    """
-    stmt = delete(Approval).where(Approval.session_id == session_id, Approval.created_at > created_at)
-    await db.execute(stmt)
-    await db.flush()

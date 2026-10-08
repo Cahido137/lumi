@@ -238,7 +238,8 @@ async def _execute_submission(session_id: str, content: str, submission: Submiss
             run_context = context_for_thread(submission.thread_id)  # 沿用受理时定下的线程ID
 
             # 重建消息历史
-            history = await rebuild_history(db, session_id, exclude_id=user_message_id)
+            before = submission.history_before_message_id
+            history = await rebuild_history(db, session_id, exclude_id=user_message_id, before_message_id=before)
             messages = get_system_messages() + history + [HumanMessage(content=content, id=user_message_id)]
 
             grants = await approvals_crud.get_session_grants(db, session_id)  # 获取当前会话工具授权
@@ -663,21 +664,36 @@ async def retry_agent_session(session_id: str, message_id: str, new_content: str
                         raise ConflictError(message="运行状态发生改变, 请重新重试")
                     await run_commands_crud.cancel_pending_commands(db, active_run.id)
 
-                # 检查消息是否被重新编辑了，重新编辑了才采用新消息，否则沿用旧消息
-                content = new_content if new_content is not None else message.content
-                # 清理此消息之后的残留
-                await messages_crud.delete_messages_after(db, session_id, message.created_at)
-                await approvals_crud.delete_approval_after(db, session_id, message.created_at)
-                await tool_executions_crud.delete_execution_after(db, session_id, message.created_at)
-                await sessions_crud.set_context_summary(db, session_id, None, None)
+                # 找出这条输入消息的重试链
+                chain = await runs_crud.list_runs_by_input(db, session_id, message_id)
+                for run in chain:
+                    await approvals_crud.cancel_pending_approvals(db, run.thread_id)
+                retry_of_run_id = chain[-1].id if chain else None
+
+                # 确定本次尝试的输入
                 if new_content is not None:
-                    await messages_crud.update_message_content(db, message_id, new_content)
-                attempt = await runs_crud.next_attempt(db, session_id, message_id)  # 计算这是同一条消息输入的第几次尝试
+                    edited = await messages_crud.add_message(db, session_id, MessageRole.USER, new_content)
+                    input_message_id = edited.id
+                    content = new_content
+                else:
+                    input_message_id = message_id
+                    content = message.content
+
+                # attempt 沿重试链延续
+                attempt = await runs_crud.next_attempt(db, session_id, message_id)
+                # 清空会话摘要: 旧摘要可能覆盖上一次尝试的消息, 不能带入新上下文
+                await sessions_crud.set_context_summary(db, session_id, None, None)
                 await db.commit()
 
             # 重跑消息
             submission = await submit_run(
-                session_id, content, kind=SUBMIT_KIND_RETRY, user_message_id=message_id, attempt=attempt
+                session_id,
+                content,
+                kind=SUBMIT_KIND_RETRY,
+                user_message_id=input_message_id,
+                attempt=attempt,
+                retry_of_run_id=retry_of_run_id,
+                history_before_message_id=message_id,
             )
             # 请求重放
             if submission.replayed:
